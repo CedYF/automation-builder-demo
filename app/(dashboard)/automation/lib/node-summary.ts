@@ -47,7 +47,7 @@ export interface NodeSummary {
   conditionSummary?: string;
   /** Scope summary (e.g. "All campaigns", "Summer Sale", "Contains: Scaling"). */
   scopeSummary?: string;
-  /** Recipient / destination summary ("Email + In-app · ced@admanage.ai"). */
+  /** Recipient / destination summary ("Email + In-app · you@example.com"). */
   destinationSummary?: string;
   /** Human-readable run cadence ("Daily 9am", "Hourly", "Every 5 minutes"). */
   frequencyLabel?: string;
