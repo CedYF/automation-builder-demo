@@ -1,5 +1,9 @@
 import type { NodeType } from "../contexts/automation-context";
 import { normalizeAssistantStepFields } from "./normalize-assistant-step";
+import {
+  resolveAutomationStepIdForCanvas,
+  type AutomationCanvasStepSnapshot,
+} from "@/lib/chat/automation-canvas-context";
 
 /**
  * Maps streamed automation-builder MCP tool calls onto live canvas mutations,
@@ -54,7 +58,18 @@ function asNodeType(value: unknown): NodeType | undefined {
 }
 
 function asConfig(value: unknown): Record<string, unknown> | undefined {
-  return isRecord(value) ? value : undefined;
+  if (isRecord(value)) return value;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed.startsWith("{")) return undefined;
+    try {
+      const parsed: unknown = JSON.parse(trimmed);
+      return isRecord(parsed) ? parsed : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
 }
 
 function asPosition(value: unknown, config?: Record<string, unknown>): number | undefined {
@@ -70,6 +85,20 @@ function asPosition(value: unknown, config?: Record<string, unknown>): number | 
 }
 
 /**
+ * The step this tool call targets, when it already exists on the canvas. Agent
+ * stepIds (`node-action-1`) do not always match live canvas ids, so this reuses the
+ * same resolution the remove path relies on.
+ */
+function findCanvasStep(
+  stepId: string,
+  steps: readonly AutomationCanvasStepSnapshot[],
+): AutomationCanvasStepSnapshot | undefined {
+  if (steps.length === 0) return undefined;
+  const resolvedId = resolveAutomationStepIdForCanvas(stepId, steps) ?? stepId;
+  return steps.find((step) => step.stepId === resolvedId);
+}
+
+/**
  * Applies one streamed builder tool call to the canvas. Returns the id of the
  * step that was just added/edited (for a transient highlight), or null when the
  * tool call is not a builder tool or lacks a usable id.
@@ -77,6 +106,11 @@ function asPosition(value: unknown, config?: Record<string, unknown>): number | 
 export function applyAutomationToolCall(
   toolCall: { readonly name: string; readonly args: Record<string, unknown> },
   api: AssistantCanvasApi,
+  options: {
+    readonly canvasSteps?: readonly AutomationCanvasStepSnapshot[];
+    readonly selectedAccountId?: string | null;
+    readonly selectedAccountPlatform?: string | null;
+  } = {},
 ): { readonly pendingStepId: string | null } | null {
   if (!isAutomationBuilderTool(toolCall.name)) return null;
   const args = toolCall.args;
@@ -92,24 +126,35 @@ export function applyAutomationToolCall(
   }
 
   if (toolCall.name === AUTOMATION_BUILDER_TOOLS.REMOVE) {
-    const id = asString(args.stepId);
-    if (!id) return { pendingStepId: null };
-    api.removeStep(id);
+    const requestedId = asString(args.stepId);
+    const canvasSteps = options.canvasSteps ?? [];
+    const resolvedId =
+      requestedId && canvasSteps.length > 0 ? resolveAutomationStepIdForCanvas(requestedId, canvasSteps) : requestedId;
+    if (!resolvedId) return { pendingStepId: null };
+    api.removeStep(resolvedId);
     return { pendingStepId: null };
   }
 
   // add_step / update_step both upsert by stepId.
   const id = asString(args.stepId);
   if (!id) return { pendingStepId: null };
-  const type = asNodeType(args.type);
-  const service = asString(args.service);
-  const rawEvent = asString(args.event);
+  // update_step sends only the fields being changed, so service/event/type are often
+  // absent. Normalizing without them skips every service-specific rule (pause target
+  // fields, notification defaults, cross-channel launch), so fall back to what the
+  // step already is on the canvas. Explicit args always win, which keeps genuine
+  // service/event changes working.
+  const existingStep = findCanvasStep(id, options.canvasSteps ?? []);
+  const type = asNodeType(args.type) ?? asNodeType(existingStep?.type);
+  const service = asString(args.service) ?? asString(existingStep?.service);
+  const rawEvent = asString(args.event) ?? asString(existingStep?.event);
   const rawConfig = asConfig(args.config);
   const normalized = normalizeAssistantStepFields({
     type,
     service,
     event: rawEvent,
     config: rawConfig,
+    selectedAccountId: options.selectedAccountId,
+    selectedAccountPlatform: options.selectedAccountPlatform,
   });
   const resolvedPosition = asPosition(args.position, normalized.config ?? rawConfig);
   const step: AssistantStepInput = {

@@ -3,9 +3,9 @@
  *
  * The cron service ticks once an hour and fires the rules whose configured slot
  * matches, so the picker only offers whole hours. Rules with no run time keep
- * the historical 09:00 slot, and weekly rules with no days keep
+ * the historical 09:00 slot (ADM-9818), and weekly rules with no days keep
  * Monday — where the Monday-pinned weekly cron used to put all of them
- *.
+ * (ADM-10118).
  *
  * These constants mirror `apps/budgeting-cron/automation/run-time.ts`. The two
  * services deploy separately and share no code, so any change here needs the
@@ -13,6 +13,7 @@
  */
 
 import { addOrdinalSuffix } from "@/lib/functions/date/formatDate";
+import { formatCustomIntervalLabel, isCustomCheckFrequency } from "@/lib/automation/custom-interval";
 
 /** Run time applied when a rule has none. Mirrors DEFAULT_POLLING_RUN_HOUR in the cron. */
 export const DEFAULT_POLLING_RUN_TIME = "09:00";
@@ -22,6 +23,16 @@ export const POLLING_RUN_TIME_ZONE_LABEL = "BST (Europe/London)";
 
 /** Seconds per hour — the `step` that keeps the native time input on whole hours. */
 export const POLLING_RUN_TIME_STEP_SECONDS = 3600;
+
+/**
+ * Helper copy shown under the run-time picker.
+ *
+ * Pulled out as a constant (rather than left inline in the picker's JSX) so a
+ * caller that condenses the picker's helper text into a tooltip — see
+ * `condensedHourlyHint` on `PollingScheduleField` — can reuse the exact same
+ * copy instead of a second hand-typed copy that could drift from this one.
+ */
+export const RUN_TIME_HELP_TEXT = `Runs on the hour. Times are ${POLLING_RUN_TIME_ZONE_LABEL}, not your local timezone. Leave empty to use ${DEFAULT_POLLING_RUN_TIME}.`;
 
 /** Cadences that support a per-rule run time. */
 const HOUR_GATED_FREQUENCIES: ReadonlySet<string> = new Set(["daily", "weekly", "monthly"]);
@@ -122,23 +133,45 @@ export function normalizeRunTimeToHour(value: string): string {
   return `${trimmed.slice(0, 2)}:00`;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/** Parses assistant/MCP schedule payloads into weekday strings before display-order sorting. */
+function parseCheckDaysInput(checkDays: unknown): readonly string[] {
+  if (Array.isArray(checkDays)) {
+    return checkDays
+      .filter((day): day is string => typeof day === "string")
+      .map((day) => day.trim().toLowerCase())
+      .filter((day) => WEEKDAY_VALUES.has(day));
+  }
+
+  if (typeof checkDays === "string" && checkDays.trim()) {
+    const day = checkDays.trim().toLowerCase();
+    return WEEKDAY_VALUES.has(day) ? [day] : [];
+  }
+
+  // Models sometimes emit data-pill shapes for a single weekday.
+  if (isRecord(checkDays) && typeof checkDays.item === "string" && checkDays.item.trim()) {
+    const day = checkDays.item.trim().toLowerCase();
+    return WEEKDAY_VALUES.has(day) ? [day] : [];
+  }
+
+  return [];
+}
+
 /**
  * Normalizes a stored `checkDays` value into known weekday values, in display order.
  *
  * Mirrors `normalizeCheckDays` in the cron: an absent or unusable value falls
- * back to Monday, so a weekly rule saved before an earlier fix keeps the slot it has
+ * back to Monday, so a weekly rule saved before ADM-10118 keeps the slot it has
  * always run in rather than silently never firing.
  */
 export function normalizeCheckDays(checkDays: unknown): readonly string[] {
-  if (!Array.isArray(checkDays)) return DEFAULT_CHECK_DAYS;
+  const parsed = parseCheckDaysInput(checkDays);
+  if (parsed.length === 0) return DEFAULT_CHECK_DAYS;
 
-  const recognised = new Set(
-    checkDays
-      .filter((day): day is string => typeof day === "string")
-      .map((day) => day.trim().toLowerCase())
-      .filter((day) => WEEKDAY_VALUES.has(day)),
-  );
-  if (recognised.size === 0) return DEFAULT_CHECK_DAYS;
+  const recognised = new Set(parsed);
 
   // Sort by WEEKDAY_OPTIONS so "Thursday, Monday" always reads "Monday and Thursday".
   return WEEKDAY_OPTIONS.filter((day) => recognised.has(day.value)).map((day) => day.value);
@@ -168,6 +201,8 @@ export function normalizeCheckDayOfMonth(checkDayOfMonth: unknown): string {
 /** The stored trigger-config fields that decide when a polling rule runs. */
 export interface PollingScheduleConfig {
   checkFrequency?: unknown;
+  intervalValue?: unknown;
+  intervalUnit?: unknown;
   checkTime?: unknown;
   checkDays?: unknown;
   checkDayOfMonth?: unknown;
@@ -203,6 +238,9 @@ function describeCadence(config: PollingScheduleConfig): string {
  */
 export function describePollingSchedule(config: PollingScheduleConfig): string {
   if (config.checkFrequency === "hourly") return "This automation will automatically run every hour.";
+  if (isCustomCheckFrequency(config.checkFrequency)) {
+    return `This automation will automatically run ${formatCustomIntervalLabel(config).toLowerCase()}.`;
+  }
   if (!isHourGatedFrequency(config.checkFrequency)) {
     return "This automation will only run when you press the Run button.";
   }
@@ -219,6 +257,7 @@ export function describePollingSchedule(config: PollingScheduleConfig): string {
 
 /** Compact schedule label for summary badges, e.g. "Weekly Mon, Thu 14:00". */
 export function summarizePollingSchedule(config: PollingScheduleConfig): string | null {
+  if (isCustomCheckFrequency(config.checkFrequency)) return formatCustomIntervalLabel(config);
   if (!isHourGatedFrequency(config.checkFrequency)) return null;
 
   const time =

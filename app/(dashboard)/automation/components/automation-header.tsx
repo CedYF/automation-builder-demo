@@ -1,10 +1,9 @@
 "use client";
 
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useRef, useMemo, type KeyboardEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useAutomation } from "../contexts/automation-context";
-import { shouldShowMetaAccountSelector } from "../lib/automation-platform-labels";
 import { toast } from "sonner";
 import {
   DropdownMenu,
@@ -19,7 +18,6 @@ import {
   Download,
   Upload,
   MoreHorizontal,
-  Zap,
   FileJson,
   Copy,
   Check,
@@ -35,6 +33,10 @@ import {
   Eye,
   Sparkles,
   Pencil,
+  ChevronDown,
+  Activity,
+  Layers,
+  MessageSquareDot,
 } from "lucide-react";
 import {
   AlertDialog,
@@ -48,54 +50,151 @@ import {
 import { ExecutionPanel } from "./execution-panel";
 import { ImportExportDialog } from "./import-export-dialog";
 import { AutomationHistorySheet } from "./automation-history-sheet";
+import { getRunHistoryAvailability, getRunHistoryTitle } from "../lib/run-history-availability";
 import { NotificationSettingsSheet } from "./notification-settings-sheet";
+import { CommentPendingRepliesSheet } from "./comment-pending-replies-sheet";
+import {
+  useCommentAutomationMembers,
+  useCommentPendingReplyCount,
+} from "../_features/comment-automation/hooks/use-comment-automation-members";
+import { RunPagesDialog } from "../_features/comment-automation/components/run-pages-dialog";
 import { automationTemplates } from "../lib/automation-templates";
+import { actionEventToType, isCommentAutomationFlow } from "../lib/comment-flow-mapper";
+import { buildCommentActionRuleSummary } from "../lib/comment-action-setup-summary";
 import { useUser } from "@/lib/providers/user-provider";
-import { canManageAutomationRules } from "@/lib/automation/automation-access";
-import { AutomationAdAccountSelector } from "./automation-ad-account-selector";
-import { useQueryState, parseAsBoolean } from "nuqs";
+import { canManageAutomationBySource, canManageAutomationRules } from "@/lib/automation/automation-access";
+import { BuilderContextBar } from "./builder-context-bar";
+import { buildBuilderIdentityLine } from "../lib/builder-identity-line";
+import { listBuilderBlockersFromFlow } from "../lib/builder-readiness";
+import { isRunNowAvailable } from "../lib/run-now-availability";
+import { useQueryState, parseAsBoolean, parseAsString } from "nuqs";
 import { cn } from "@/lib/utils";
+
+/** How often the "saved 2m ago" line re-renders. */
+const IDENTITY_LINE_REFRESH_MS = 30_000;
+/** Placeholder clock for the pre-save case, where recency is never rendered. */
+const EPOCH = new Date(0);
 
 interface AutomationHeaderProps {
   onBackToTable?: () => void;
+  isAssistantActive?: boolean;
+  onAskAiToggle?: () => void;
 }
 
-export function AutomationHeader({ onBackToTable }: AutomationHeaderProps) {
+export function AutomationHeader({ onBackToTable, isAssistantActive, onAskAiToggle }: AutomationHeaderProps) {
   const {
     flow,
     editorIdentity,
     setFlowActive,
-    setSelectedAccount,
     exportFlow,
     importFlowAsNew,
     saveAutomation,
     runAutomation,
     cancelExecution,
     isExecuting,
+    lastExecutionId,
+    showExecutionPanel,
+    setShowExecutionPanel,
   } = useAutomation();
   const { extendedUser } = useUser();
-  const canManageAutomations = canManageAutomationRules(extendedUser?.role);
+  // Only a saved comment automation that replies can have drafts waiting; the
+  // menu entry is hidden for everything else so it never reads as a dead item.
+  const isCommentAutomation = isCommentAutomationFlow(flow.nodes);
+  // Comment automations answer to the comment gate, which comment-only roles
+  // (analysts, ADM-11300) pass; JSON import and flow templates stay on the
+  // flow gate because they only ever produce flow automations.
+  const canManageAutomations = canManageAutomationBySource(
+    extendedUser?.role,
+    isCommentAutomation ? "comment" : "flow",
+  );
+  const canManageFlowAutomations = canManageAutomationRules(extendedUser?.role);
   const [fullPreviewOpen, setFullPreviewOpen] = useQueryState("fullPreview", parseAsBoolean.withDefault(false));
   const [assistantOpen, setAssistantOpen] = useQueryState("assistant", parseAsBoolean.withDefault(false));
-  const [showExecutionPanel, setShowExecutionPanel] = useState(false);
+  // A comment automation's history is its own view on this page, not a sheet.
+  const [, setView] = useQueryState("view", parseAsString.withDefault("table"));
+  const assistantButtonActive = isAssistantActive ?? Boolean(assistantOpen);
   const [showImportExport, setShowImportExport] = useState(false);
   const [showHistoryPanel, setShowHistoryPanel] = useState(false);
   const [showNotificationSettings, setShowNotificationSettings] = useState(false);
+  const [showPendingReplies, setShowPendingReplies] = useState(false);
+  const [showRunPages, setShowRunPages] = useState(false);
   const [showActiveWarning, setShowActiveWarning] = useState(false);
   const [copied, setCopied] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isSavingName, setIsSavingName] = useState(false);
+  const [isEditingName, setIsEditingName] = useState(false);
   const [localName, setLocalName] = useState(flow.name);
   const initialNameRef = useRef(flow.name);
+  const nameInputRef = useRef<HTMLInputElement>(null);
+  // Drives the "saved 2m ago" half of the identity line. Only this session's
+  // saves are known, so it stays null until the user saves.
+  const [savedAt, setSavedAt] = useState<Date | null>(null);
+  const [identityNow, setIdentityNow] = useState<Date | null>(null);
 
   const isEditorIdentityReady = editorIdentity.canMutate;
   const getExistingAutomationId = (): number | null => editorIdentity.existingRuleId;
 
+  // Run history used to be a grey button with no explanation on an unsaved
+  // draft, which reads as broken rather than "there is nothing to show yet".
+  // The controls stay clickable and say why instead.
+  const runHistoryAvailability = getRunHistoryAvailability({
+    existingRuleId: editorIdentity.existingRuleId,
+    identityStatus: editorIdentity.status,
+    identityError: editorIdentity.error,
+  });
+  const openRunHistory = (): void => {
+    if (!runHistoryAvailability.isAvailable) {
+      toast.info("Run history isn't available yet", { description: runHistoryAvailability.blockedReason ?? undefined });
+      return;
+    }
+    // A comment automation's runs span every page rule in its group and read
+    // far better full width, so they get a view of their own the URL can point
+    // at. Flow automations keep the sheet: their history is a different source.
+    if (isCommentAutomation) {
+      void setView("history");
+      return;
+    }
+    setShowHistoryPanel(true);
+  };
+
+  const runBlockers = useMemo(
+    () => listBuilderBlockersFromFlow({ nodes: flow.nodes, selectedAccountId: flow.selectedAccountId }),
+    [flow.nodes, flow.selectedAccountId],
+  );
+  // Which page(s) a comment rule watches so the History sheet can show it
+  // above the run list, the same context execution-panel.tsx already leads
+  // with — a rule's page selection doesn't vary per past run, so it only
+  // needs to be stated once rather than repeated on every row.
+  const commentRuleSummary = useMemo(
+    () => (isCommentAutomationFlow(flow.nodes) ? buildCommentActionRuleSummary(flow.nodes) : null),
+    [flow.nodes],
+  );
+  const primaryRunBlocker = runBlockers[0] ?? null;
+  // Single source of truth for "is this automation runnable right now" —
+  // gates the persistent Run button below.
+  const canRun = isRunNowAvailable({
+    nodes: flow.nodes,
+    selectedAccountId: flow.selectedAccountId,
+    canManageAutomations,
+    canMutate: isEditorIdentityReady,
+  });
+  const commentActionType = actionEventToType(flow.nodes.find((node) => node.type === "action")?.event);
+  const canReviewReplies =
+    isCommentAutomation && commentActionType === "reply" && editorIdentity.existingRuleId !== null;
+  const pendingReplyCount = useCommentPendingReplyCount(editorIdentity.existingRuleId, canReviewReplies);
+  // Every per-page rule of this automation, so Run can offer a subset. Only
+  // fetched for a saved comment automation — there is nothing to pick before.
+  const commentMembers = useCommentAutomationMembers(
+    isCommentAutomation ? editorIdentity.existingRuleId : null,
+    isCommentAutomation && editorIdentity.existingRuleId !== null,
+  );
+  const runnablePages = commentMembers.data?.members ?? [];
+  // One page needs no picker: plain Run already does exactly that.
+  const canPickRunPages = isCommentAutomation && runnablePages.length > 1;
+
   const rejectStaleEditorAction = (): boolean => {
     if (isEditorIdentityReady) return false;
-    toast.error(editorIdentity.error || "Automation is still loading. Try again in a moment.", {
-      position: "top-right",
-    });
+    toast.error(editorIdentity.error || "Automation is still loading. Try again in a moment.");
     return true;
   };
 
@@ -103,13 +202,26 @@ export function AutomationHeader({ onBackToTable }: AutomationHeaderProps) {
   const isActivelyRunning =
     flow.isActive && !!flow.frequency && ["hourly", "daily", "weekly", "monthly"].includes(flow.frequency);
 
-  const showMetaAccountSelector = useMemo(() => shouldShowMetaAccountSelector(flow.nodes ?? []), [flow.nodes]);
-
   // Sync local name when flow.name changes externally
   useEffect(() => {
     setLocalName(flow.name);
     initialNameRef.current = flow.name;
   }, [flow.name]);
+
+  // Re-tick the "saved 2m ago" clock. Reading the clock on the client only
+  // (never during render) keeps the server and first client paint identical.
+  useEffect(() => {
+    if (!savedAt) return;
+    setIdentityNow(new Date());
+    const interval = setInterval(() => setIdentityNow(new Date()), IDENTITY_LINE_REFRESH_MS);
+    return () => clearInterval(interval);
+  }, [savedAt]);
+
+  const identityLine = buildBuilderIdentityLine({
+    ruleId: getExistingAutomationId(),
+    savedAt: identityNow ? savedAt : null,
+    now: identityNow ?? savedAt ?? EPOCH,
+  });
 
   // Check if name has been modified - show buttons whenever name changes
   const isNameModified = localName !== initialNameRef.current && localName.trim() !== "";
@@ -118,7 +230,7 @@ export function AutomationHeader({ onBackToTable }: AutomationHeaderProps) {
     if (!isNameModified) return;
     if (rejectStaleEditorAction()) return;
     if (!canManageAutomations) {
-      toast.error("You do not have permission to manage automations", { position: "top-right" });
+      toast.error("You do not have permission to manage automations");
       return;
     }
 
@@ -126,32 +238,49 @@ export function AutomationHeader({ onBackToTable }: AutomationHeaderProps) {
     try {
       const result = await saveAutomation({ mode: "update", name: localName });
       if (!result.ok) {
-        toast.error(result.error, { position: "top-right" });
+        toast.error(result.error);
         setLocalName(initialNameRef.current); // Revert on error
         return;
       }
 
       setLocalName(result.name);
       initialNameRef.current = result.name;
-      toast.success(`${result.name} saved`, { position: "top-right" });
+      setSavedAt(new Date());
+      setIsEditingName(false);
+      toast.success(`${result.name} saved`);
+      if (result.warning) toast.warning(result.warning);
     } finally {
       setIsSavingName(false);
     }
   };
 
-  // Handle ad account change from ChooseAdAccount component
-  const handleAccountChange = (businessId: string) => {
-    if (rejectStaleEditorAction()) return;
-    // Find the account name from extendedUser settings
-    const relevantSettings =
-      extendedUser?.settings?.filter((setting: any) => setting.workspaceId === extendedUser.defaultWorkspaceId) || [];
-    const matchingSetting = relevantSettings.find((s: any) => s.businessId === businessId);
-    const accountName = matchingSetting?.businessName || businessId;
-    setSelectedAccount(businessId, accountName);
-  };
-
   const handleCancelName = () => {
     setLocalName(initialNameRef.current);
+    setIsEditingName(false);
+  };
+
+  const handleStartEditingName = () => {
+    if (!canManageAutomations || !isEditorIdentityReady) return;
+    setIsEditingName(true);
+  };
+
+  const handleNameInputKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      void handleSaveName();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      handleCancelName();
+    }
+  };
+
+  // Blurring with no unsaved edit just closes the field. With an unsaved
+  // edit, stay open so the Save/Cancel buttons remain reachable rather than
+  // silently reverting or auto-saving the whole automation on blur.
+  const handleNameInputBlur = () => {
+    if (!isNameModified) {
+      setIsEditingName(false);
+    }
   };
 
   const handleExport = () => {
@@ -164,11 +293,11 @@ export function AutomationHeader({ onBackToTable }: AutomationHeaderProps) {
     a.click();
     URL.revokeObjectURL(url);
 
-    toast.success("Automation exported", { position: "top-right" });
+    toast.success("Automation exported");
   };
 
   const handleImport = () => {
-    if (!canManageAutomations) {
+    if (!canManageFlowAutomations) {
       toast.error("You do not have permission to manage automations", { position: "top-right" });
       return;
     }
@@ -184,9 +313,9 @@ export function AutomationHeader({ onBackToTable }: AutomationHeaderProps) {
           try {
             const json = event.target?.result as string;
             importFlowAsNew(json);
-            toast.success("Automation imported", { position: "top-right" });
+            toast.success("Automation imported");
           } catch {
-            toast.error("Invalid JSON file format", { position: "top-right" });
+            toast.error("Invalid JSON file format");
           }
         };
         reader.readAsText(file);
@@ -201,17 +330,17 @@ export function AutomationHeader({ onBackToTable }: AutomationHeaderProps) {
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
 
-    toast.success("Copied to clipboard", { position: "top-right" });
+    toast.success("Copied to clipboard");
   };
 
   const handleLoadTemplate = (template: any) => {
-    if (!canManageAutomations) {
+    if (!canManageFlowAutomations) {
       toast.error("You do not have permission to manage automations", { position: "top-right" });
       return;
     }
 
     importFlowAsNew(JSON.stringify(template));
-    toast.success(`${template.name} loaded`, { position: "top-right" });
+    toast.success(`${template.name} loaded`);
   };
 
   const handleSave = async () => {
@@ -228,24 +357,28 @@ export function AutomationHeader({ onBackToTable }: AutomationHeaderProps) {
   };
 
   // Core save logic, used by handleSave, handleSaveAsNew, handlePauseAndSave
-  const performSave = async (mode: "update" | "create") => {
-    if (rejectStaleEditorAction()) return;
+  // and handleRun. Returns whether the automation is persisted afterwards.
+  const performSave = async (mode: "update" | "create"): Promise<boolean> => {
+    if (rejectStaleEditorAction()) return false;
     if (!canManageAutomations) {
-      toast.error("You do not have permission to manage automations", { position: "top-right" });
-      return;
+      toast.error("You do not have permission to manage automations");
+      return false;
     }
 
     setIsSaving(true);
     try {
       const result = await saveAutomation({ mode, name: localName });
       if (!result.ok) {
-        toast.error(result.error, { position: "top-right" });
-        return;
+        toast.error(result.error);
+        return false;
       }
 
       setLocalName(result.name);
       initialNameRef.current = result.name;
-      toast.success(`${result.name} saved`, { position: "top-right" });
+      setSavedAt(new Date());
+      toast.success(`${result.name} saved`);
+      if (result.warning) toast.warning(result.warning);
+      return true;
     } finally {
       setIsSaving(false);
     }
@@ -261,7 +394,7 @@ export function AutomationHeader({ onBackToTable }: AutomationHeaderProps) {
   const handlePauseAndSave = async () => {
     if (rejectStaleEditorAction()) return;
     if (!canManageAutomations) {
-      toast.error("You do not have permission to manage automations", { position: "top-right" });
+      toast.error("You do not have permission to manage automations");
       return;
     }
 
@@ -278,7 +411,7 @@ export function AutomationHeader({ onBackToTable }: AutomationHeaderProps) {
       });
 
       if (!pauseResponse.ok) {
-        toast.error("Failed to pause automation", { position: "top-right" });
+        toast.error("Failed to pause automation");
         return;
       }
 
@@ -288,14 +421,29 @@ export function AutomationHeader({ onBackToTable }: AutomationHeaderProps) {
       // Now save the edits to the same automation
       await performSave("update");
     } catch {
-      toast.error("An error occurred while pausing", { position: "top-right" });
+      toast.error("An error occurred while pausing");
     }
   };
 
   const handleRun = async () => {
     if (rejectStaleEditorAction()) return;
     if (!canManageAutomations) {
-      toast.error("You do not have permission to run automations", { position: "top-right" });
+      toast.error("You do not have permission to run automations");
+      return;
+    }
+    if (primaryRunBlocker) {
+      toast.error(primaryRunBlocker);
+      return;
+    }
+
+    // Run uses the in-memory flow — it does not save. The config panel footer
+    // and header both keep Save as its own action so the builder path is:
+    // preview → run → save. Exception: a live recurring automation must not
+    // be implicitly overwritten; Run there uses the last saved version and
+    // Save (with its dialog) is how edits land.
+    if (isActivelyRunning) {
+      setShowExecutionPanel(true);
+      await runAutomation();
       return;
     }
 
@@ -306,65 +454,70 @@ export function AutomationHeader({ onBackToTable }: AutomationHeaderProps) {
   return (
     <>
       <header className="border-b border-border bg-card">
-        {/* Main header row */}
-        <div className="flex items-center justify-between px-3 py-3 md:px-6 md:py-4">
-          <div className="flex items-center gap-2 md:gap-4 flex-1 min-w-0">
+        {/* Identity on the left, one action cluster on the right */}
+        <div className="flex items-center justify-between gap-3 px-3 py-2.5 md:px-6 md:py-3">
+          <div className="flex min-w-0 flex-1 items-center gap-2.5">
             {onBackToTable && (
               <Button
                 onClick={onBackToTable}
-                variant="ghost"
+                variant="outline"
                 size="icon"
-                className="h-9 w-9 md:h-10 md:w-10 flex-shrink-0"
+                className="h-8 w-8 flex-shrink-0"
+                title="Back to all automations"
+                aria-label="Back to all automations"
               >
-                <ArrowLeft className="h-5 w-5" />
+                <ArrowLeft className="h-4 w-4" />
               </Button>
             )}
-            <div className="flex items-center gap-2 flex-1 min-w-0">
-              <div className="hidden h-10 w-10 items-center justify-center rounded-lg bg-primary md:flex flex-shrink-0">
-                <Zap className="h-5 w-5 text-primary-foreground" />
-              </div>
-              <div className="flex items-center gap-2 flex-1 min-w-0">
-                <div className="group relative min-w-0 flex-1 sm:max-w-md">
+            <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+              <div className="flex min-w-0 items-center gap-2">
+                {isEditingName ? (
                   <Input
+                    ref={nameInputRef}
+                    autoFocus
                     value={localName}
                     onChange={(e) => setLocalName(e.target.value)}
-                    className={cn(
-                      "h-10 min-w-0 rounded-lg border-border bg-background pr-10 text-base font-semibold shadow-sm transition-colors md:text-lg",
-                      canManageAutomations &&
-                        isEditorIdentityReady &&
-                        "cursor-text hover:border-primary/60 hover:bg-muted/20 focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary/20",
-                    )}
+                    onKeyDown={handleNameInputKeyDown}
+                    onBlur={handleNameInputBlur}
+                    onFocus={(e) => e.currentTarget.select()}
+                    className="h-8 min-w-0 flex-1 border-primary bg-background px-1.5 text-[17px] font-bold tracking-[-0.01em] shadow-none ring-2 ring-primary/20 sm:max-w-sm"
                     placeholder="Automation name"
                     aria-label="Automation name"
+                  />
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleStartEditingName}
+                    disabled={!canManageAutomations || !isEditorIdentityReady}
+                    className={cn(
+                      "group flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-left transition-colors",
+                      canManageAutomations && isEditorIdentityReady && "hover:bg-muted/40",
+                    )}
                     title={
                       canManageAutomations && isEditorIdentityReady
                         ? "Click to rename this automation"
                         : "Automation name"
                     }
-                    readOnly={!canManageAutomations || !isEditorIdentityReady}
-                  />
-                  {canManageAutomations && isEditorIdentityReady && (
-                    <Pencil
-                      aria-hidden="true"
-                      className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground transition-colors group-hover:text-primary group-focus-within:text-primary"
-                    />
-                  )}
-                </div>
-                {getExistingAutomationId() != null && (
-                  <span
-                    className="text-xs text-muted-foreground font-normal shrink-0"
-                    title="Automation ID for debugging"
+                    aria-label={
+                      canManageAutomations && isEditorIdentityReady ? `Rename automation: ${localName}` : undefined
+                    }
                   >
-                    #{getExistingAutomationId()}
-                  </span>
+                    <span className="truncate text-[17px] font-bold tracking-[-0.01em]">{localName}</span>
+                    {canManageAutomations && isEditorIdentityReady && (
+                      <Pencil
+                        aria-hidden="true"
+                        className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground transition-colors group-hover:text-foreground"
+                      />
+                    )}
+                  </button>
                 )}
                 {isNameModified && (
-                  <div className="flex items-center gap-1.5 flex-shrink-0">
+                  <div className="flex flex-shrink-0 items-center gap-1.5">
                     <Button
                       onClick={handleSaveName}
                       disabled={isSavingName || !canManageAutomations || !isEditorIdentityReady}
                       size="sm"
-                      className="h-8 px-2.5 bg-green-600 hover:bg-green-700 text-white gap-1.5 whitespace-nowrap"
+                      className="h-7 gap-1.5 whitespace-nowrap bg-green-600 px-2.5 text-white hover:bg-green-700"
                       title="Save name"
                     >
                       {isSavingName ? (
@@ -372,209 +525,190 @@ export function AutomationHeader({ onBackToTable }: AutomationHeaderProps) {
                       ) : (
                         <Check className="h-3.5 w-3.5" />
                       )}
-                      <span className="text-xs font-medium hidden sm:inline">Save</span>
+                      <span className="hidden text-xs font-medium sm:inline">Save</span>
                     </Button>
                     <Button
                       onClick={handleCancelName}
                       size="sm"
                       variant="outline"
-                      className="h-8 px-2.5 border-red-300 text-red-600 hover:bg-red-50 hover:border-red-400 gap-1.5 whitespace-nowrap"
+                      className="h-7 gap-1.5 whitespace-nowrap border-red-300 px-2.5 text-red-600 hover:border-red-400 hover:bg-red-50"
                       title="Cancel"
                     >
                       <X className="h-3.5 w-3.5" />
-                      <span className="text-xs font-medium hidden sm:inline">Cancel</span>
+                      <span className="hidden text-xs font-medium sm:inline">Cancel</span>
                     </Button>
                   </div>
                 )}
               </div>
+              <span className="truncate px-1.5 font-mono text-[11px] text-muted-foreground">{identityLine}</span>
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-shrink-0 items-center gap-2">
             {/* Ask AI — toggles the MCP assistant dock */}
             <Button
-              onClick={() => setAssistantOpen(assistantOpen ? null : true)}
-              variant={assistantOpen ? "default" : "outline"}
+              onClick={() => {
+                if (onAskAiToggle) {
+                  onAskAiToggle();
+                  return;
+                }
+                setAssistantOpen(assistantOpen ? null : true);
+              }}
+              // Identical to Save: a solid violet pill sitting beside Save and Run
+              // made the assistant the loudest thing in the header and pulled focus
+              // away from the actual work.
+              variant="outline"
               size="sm"
-              className={cn("gap-2", assistantOpen ? "bg-violet-600 hover:bg-violet-700" : "")}
+              className="h-8 gap-2"
+              // The open/closed state is still announced, just not painted.
+              aria-pressed={assistantButtonActive}
               title="Ask the AI assistant"
             >
               <Sparkles className="h-4 w-4" />
-              <span className="hidden sm:inline">Ask AI</span>
+              <span className="hidden lg:inline">Ask AI</span>
             </Button>
-
-            {/* Desktop buttons */}
             <Button
               onClick={handleSave}
               disabled={isSaving || !canManageAutomations || !isEditorIdentityReady}
               variant="outline"
               size="sm"
-              className="hidden gap-2 sm:flex"
+              className="h-8 gap-2"
+              title="Save this automation"
             >
               {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-              {isSaving ? "Saving..." : "Save"}
+              <span className="hidden sm:inline">{isSaving ? "Saving..." : "Save"}</span>
             </Button>
 
+            {/* Run — the only filled button. The caret carries the run variants. */}
             {isExecuting ? (
-              <>
-                <Button
-                  onClick={() => setShowExecutionPanel(true)}
-                  size="sm"
-                  variant="outline"
-                  className="hidden gap-2 sm:flex"
-                >
+              <div className="flex items-center gap-2">
+                <Button onClick={() => setShowExecutionPanel(true)} size="sm" variant="outline" className="h-8 gap-2">
                   <Loader2 className="h-4 w-4 animate-spin" />
-                  Running...
+                  <span className="hidden sm:inline">Running...</span>
                 </Button>
-                <Button onClick={cancelExecution} size="sm" variant="destructive" className="hidden gap-2 sm:flex">
+                <Button onClick={cancelExecution} size="sm" variant="destructive" className="h-8 gap-2">
                   <Ban className="h-4 w-4" />
-                  Cancel
+                  <span className="hidden sm:inline">Cancel</span>
                 </Button>
-              </>
-            ) : (
-              <Button
-                onClick={handleRun}
-                size="sm"
-                className="hidden gap-2 sm:flex"
-                disabled={!canManageAutomations || !isEditorIdentityReady}
-              >
-                <Play className="h-4 w-4" />
-                Run
-              </Button>
-            )}
-
-            <Button
-              data-testid="header-full-preview"
-              onClick={() => setFullPreviewOpen(fullPreviewOpen ? null : true)}
-              variant={fullPreviewOpen ? "default" : "outline"}
-              size="sm"
-              className="hidden gap-2 sm:flex"
-              title="Full preview"
-            >
-              <Eye className="h-4 w-4" />
-              Full preview
-            </Button>
-
-            <Button
-              onClick={() => setShowHistoryPanel(true)}
-              variant="outline"
-              size="sm"
-              className="hidden gap-2 sm:flex"
-              disabled={getExistingAutomationId() === null}
-              title={getExistingAutomationId() === null ? "Save automation to view history" : "View execution history"}
-            >
-              <History className="h-4 w-4" />
-              History
-            </Button>
-
-            <Button
-              onClick={() => setShowNotificationSettings(true)}
-              variant="outline"
-              size="sm"
-              className="hidden gap-2 sm:flex"
-              title="Notification settings"
-            >
-              <Bell className="h-4 w-4" />
-            </Button>
-
-            {/* Mobile save button */}
-            <Button
-              onClick={handleSave}
-              disabled={isSaving || !canManageAutomations || !isEditorIdentityReady}
-              variant="outline"
-              size="icon"
-              className="h-9 w-9 sm:hidden"
-            >
-              {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-            </Button>
-
-            {/* Mobile run/cancel button */}
-            {isExecuting ? (
-              <>
                 <Button
-                  onClick={() => setShowExecutionPanel(true)}
+                  onClick={openRunHistory}
                   size="icon"
                   variant="outline"
-                  className="h-9 w-9 sm:hidden"
+                  className="h-8 w-8"
+                  title={getRunHistoryTitle(runHistoryAvailability)}
+                  aria-label="Run history"
+                  aria-disabled={!runHistoryAvailability.isAvailable}
                 >
-                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <History className="h-4 w-4" />
                 </Button>
-                <Button onClick={cancelExecution} size="icon" variant="destructive" className="h-9 w-9 sm:hidden">
-                  <Ban className="h-4 w-4" />
-                </Button>
-              </>
+              </div>
             ) : (
-              <Button
-                onClick={handleRun}
-                size="icon"
-                className="h-9 w-9 sm:hidden"
-                disabled={!canManageAutomations || !isEditorIdentityReady}
-              >
-                <Play className="h-4 w-4" />
-              </Button>
+              <div className="flex items-stretch overflow-hidden rounded-md">
+                <Button
+                  onClick={handleRun}
+                  size="sm"
+                  className="h-8 gap-2 rounded-none rounded-l-md"
+                  disabled={!canRun}
+                  title={primaryRunBlocker ?? "Run this automation now"}
+                >
+                  <Play className="h-4 w-4" />
+                  Run
+                </Button>
+                <span className="w-px bg-primary-foreground/30" aria-hidden="true" />
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      size="sm"
+                      className="h-8 w-7 rounded-none rounded-r-md p-0"
+                      disabled={!canRun}
+                      title={primaryRunBlocker ?? "More run options"}
+                      aria-label="More run options"
+                    >
+                      <ChevronDown className="h-4 w-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-56">
+                    <DropdownMenuItem onClick={handleRun} disabled={!canRun}>
+                      <Play className="mr-2 h-4 w-4" />
+                      {canPickRunPages ? `Run on all ${runnablePages.length} pages` : "Run now"}
+                    </DropdownMenuItem>
+                    {canPickRunPages && (
+                      <DropdownMenuItem onClick={() => setShowRunPages(true)} disabled={!canRun}>
+                        <Layers className="mr-2 h-4 w-4" />
+                        Run on selected pages…
+                      </DropdownMenuItem>
+                    )}
+                    <DropdownMenuItem
+                      data-testid="header-full-preview"
+                      onClick={() => setFullPreviewOpen(fullPreviewOpen ? null : true)}
+                    >
+                      <Eye className="mr-2 h-4 w-4" />
+                      {fullPreviewOpen ? "Hide full preview" : "Preview without running"}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => setShowExecutionPanel(true)}
+                      disabled={lastExecutionId === null && !isExecuting}
+                    >
+                      <Activity className="mr-2 h-4 w-4" />
+                      View last run
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={openRunHistory} title={getRunHistoryTitle(runHistoryAvailability)}>
+                      <History className="mr-2 h-4 w-4" />
+                      <span className="flex min-w-0 flex-col">
+                        <span>Run history</span>
+                        {runHistoryAvailability.blockedReason ? (
+                          <span className="text-xs text-muted-foreground">{runHistoryAvailability.blockedReason}</span>
+                        ) : null}
+                      </span>
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
             )}
 
-            {/* Mobile history button */}
-            <Button
-              onClick={() => setShowHistoryPanel(true)}
-              variant="outline"
-              size="icon"
-              className="h-9 w-9 sm:hidden"
-              disabled={getExistingAutomationId() === null}
-            >
-              <History className="h-4 w-4" />
-            </Button>
-
-            {/* Mobile notification button */}
-            <Button
-              onClick={() => setShowNotificationSettings(true)}
-              variant="outline"
-              size="icon"
-              className="h-9 w-9 sm:hidden"
-            >
-              <Bell className="h-4 w-4" />
-            </Button>
-
-            {/* Actions dropdown - visible on all sizes */}
+            {/* Everything else — Preview and Notifications were pulling
+                weight they don't deserve in the top bar. */}
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="icon" className="h-9 w-9 bg-transparent">
+                <Button variant="outline" size="icon" className="h-8 w-8 bg-transparent" aria-label="More actions">
                   <MoreHorizontal className="h-4 w-4" />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-56">
-                <DropdownMenuItem
-                  onClick={handleSave}
-                  disabled={isSaving || !canManageAutomations || !isEditorIdentityReady}
-                  className="sm:hidden"
-                >
-                  <Save className="mr-2 h-4 w-4" />
-                  {isSaving ? "Saving..." : "Save Automation"}
+                <DropdownMenuItem onClick={openRunHistory} title={getRunHistoryTitle(runHistoryAvailability)}>
+                  <History className="mr-2 h-4 w-4" />
+                  <span className="flex min-w-0 flex-col">
+                    <span>Run history</span>
+                    {runHistoryAvailability.blockedReason ? (
+                      <span className="text-xs text-muted-foreground">{runHistoryAvailability.blockedReason}</span>
+                    ) : null}
+                  </span>
                 </DropdownMenuItem>
-                {isExecuting ? (
-                  <>
-                    <DropdownMenuItem onClick={() => setShowExecutionPanel(true)} className="sm:hidden">
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      View Progress
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={cancelExecution} className="sm:hidden text-red-600">
-                      <Ban className="mr-2 h-4 w-4" />
-                      Cancel Execution
-                    </DropdownMenuItem>
-                  </>
-                ) : (
-                  <DropdownMenuItem
-                    onClick={handleRun}
-                    disabled={!canManageAutomations || !isEditorIdentityReady}
-                    className="sm:hidden"
-                  >
-                    <Play className="mr-2 h-4 w-4" />
-                    Run Automation
+                <DropdownMenuItem
+                  onClick={() => setFullPreviewOpen(fullPreviewOpen ? null : true)}
+                  disabled={flow.nodes.length === 0}
+                >
+                  <Eye className="mr-2 h-4 w-4" />
+                  {fullPreviewOpen ? "Hide full preview" : "Full preview"}
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setShowNotificationSettings(true)}>
+                  <Bell className="mr-2 h-4 w-4" />
+                  Notification settings
+                </DropdownMenuItem>
+                {canReviewReplies && (
+                  <DropdownMenuItem onClick={() => setShowPendingReplies(true)}>
+                    <MessageSquareDot className="mr-2 h-4 w-4" />
+                    Review replies
+                    {pendingReplyCount !== null && pendingReplyCount > 0 && (
+                      <span className="ml-auto rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                        {pendingReplyCount.toLocaleString("en-US")}
+                      </span>
+                    )}
                   </DropdownMenuItem>
                 )}
-                <DropdownMenuSeparator className="sm:hidden" />
+                <DropdownMenuSeparator />
                 <DropdownMenuLabel>Quick Actions</DropdownMenuLabel>
-                <DropdownMenuItem onClick={() => setShowImportExport(true)} disabled={!canManageAutomations}>
+                <DropdownMenuItem onClick={() => setShowImportExport(true)} disabled={!canManageFlowAutomations}>
                   <FileJson className="mr-2 h-4 w-4" />
                   Import/Export
                 </DropdownMenuItem>
@@ -586,7 +720,7 @@ export function AutomationHeader({ onBackToTable }: AutomationHeaderProps) {
                   <Download className="mr-2 h-4 w-4" />
                   Download JSON
                 </DropdownMenuItem>
-                <DropdownMenuItem onClick={handleImport} disabled={!canManageAutomations}>
+                <DropdownMenuItem onClick={handleImport} disabled={!canManageFlowAutomations}>
                   <Upload className="mr-2 h-4 w-4" />
                   Upload JSON
                 </DropdownMenuItem>
@@ -596,7 +730,7 @@ export function AutomationHeader({ onBackToTable }: AutomationHeaderProps) {
                   <DropdownMenuItem
                     key={template.id}
                     onClick={() => handleLoadTemplate(template)}
-                    disabled={!canManageAutomations}
+                    disabled={!canManageFlowAutomations}
                   >
                     <FileCode className="mr-2 h-4 w-4" />
                     {template.name}
@@ -607,19 +741,8 @@ export function AutomationHeader({ onBackToTable }: AutomationHeaderProps) {
           </div>
         </div>
 
-        {/* Ad Account selector row — Meta-only; hidden for TikTok/cross-channel flows */}
-        {showMetaAccountSelector && (
-          <div className="flex items-center px-3 pb-3 pt-0 md:px-6 md:pb-4">
-            <div className="w-[260px]">
-              <AutomationAdAccountSelector
-                value={flow.selectedAccountId ?? ""}
-                onChange={(value) => handleAccountChange(value)}
-                placeholder="Select ad account..."
-                disabled={!canManageAutomations || !isEditorIdentityReady}
-              />
-            </div>
-          </div>
-        )}
+        {/* Context bar — account, size, blocker and the on/off switch */}
+        <BuilderContextBar />
       </header>
 
       <ExecutionPanel open={showExecutionPanel} onOpenChange={setShowExecutionPanel} />
@@ -629,8 +752,28 @@ export function AutomationHeader({ onBackToTable }: AutomationHeaderProps) {
         onOpenChange={setShowHistoryPanel}
         automationRuleId={getExistingAutomationId()}
         automationName={flow.name}
+        isCommentAutomation={isCommentAutomationFlow(flow.nodes)}
+        commentActionType={commentActionType}
+        commentRuleSummary={commentRuleSummary}
       />
       <NotificationSettingsSheet open={showNotificationSettings} onOpenChange={setShowNotificationSettings} />
+      <RunPagesDialog
+        open={showRunPages}
+        onOpenChange={setShowRunPages}
+        members={runnablePages}
+        isStarting={isExecuting}
+        onRun={(ruleIds) => {
+          setShowRunPages(false);
+          setShowExecutionPanel(true);
+          void runAutomation({ ruleIds });
+        }}
+      />
+      <CommentPendingRepliesSheet
+        open={showPendingReplies}
+        onOpenChange={setShowPendingReplies}
+        automationRuleId={editorIdentity.existingRuleId}
+        automationName={flow.name}
+      />
 
       {/* Active automation warning dialog */}
       <AlertDialog open={showActiveWarning} onOpenChange={setShowActiveWarning}>

@@ -1,0 +1,35 @@
+"use client";
+
+import type { SVGProps } from "react";
+import { cn } from "@/lib/utils";
+
+interface AxonProps extends SVGProps<SVGSVGElement> {
+  grayscale?: boolean;
+}
+
+/**
+ * Inline AppLovin mark — fills with `currentColor` so it adapts to light and
+ * dark surfaces, and avoids a Next/Image fetch so tab icons paint on the first
+ * frame. (Kept named `Axon` internally; the brand it represents is AppLovin.)
+ */
+export function Axon({ className, grayscale = false, ...props }: AxonProps) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="40 40 80 80"
+      fill="none"
+      className={cn("block shrink-0", grayscale && "grayscale", className)}
+      aria-hidden="true"
+      {...props}
+    >
+      <path
+        fillRule="evenodd"
+        clipRule="evenodd"
+        d="M80 44C85.5229 44 90 48.4772 90 54C90 56.6757 88.9469 59.1038 87.2354 60.8984L107.576 96.2969C108.352 96.1036 109.164 96 110 96C115.523 96 120 100.477 120 106C120 111.523 115.523 116 110 116C104.477 116 100 111.523 100 106C100 104.917 100.174 103.874 100.492 102.897C99.6591 102.633 98.6272 102.334 97.3984 102.035C93.5037 101.088 87.6325 100.12 79.9043 100.12C72.1767 100.12 66.3067 101.088 62.4121 102.035C61.2657 102.314 60.2905 102.593 59.4883 102.844C59.8183 103.836 60 104.897 60 106C60 111.523 55.5228 116 50 116C44.4772 116 40 111.523 40 106C40 100.477 44.4772 96 50 96C50.7711 96 51.5212 96.0897 52.2422 96.2549L72.7041 60.8359C71.0279 59.0477 70 56.6444 70 54C70 48.4772 74.4772 44 80 44ZM50 102C47.7909 102 46 103.791 46 106C46 108.209 47.7909 110 50 110C52.2091 110 54 108.209 54 106C54 103.791 52.2091 102 50 102ZM110 102C107.791 102 106 103.791 106 106C106 108.209 107.791 110 110 110C112.209 110 114 108.209 114 106C114 103.791 112.209 102 110 102ZM58.8779 96.7617C59.519 96.5791 60.2248 96.3922 60.9941 96.2051C65.3248 95.1521 71.6709 94.1202 79.9043 94.1201C88.1381 94.1201 94.4856 95.1521 98.8164 96.2051C99.5808 96.3909 100.282 96.5773 100.92 96.7588L81.9824 63.8027C81.3416 63.9316 80.6788 64 80 64C79.2904 64 78.5984 63.9247 77.9307 63.7842L58.8779 96.7617ZM80 50C77.7909 50 76 51.7909 76 54C76 56.2091 77.7909 58 80 58C82.2091 58 84 56.2091 84 54C84 51.7909 82.2091 50 80 50Z"
+        fill="currentColor"
+      />
+    </svg>
+  );
+}
+
+export default Axon;

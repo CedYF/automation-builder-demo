@@ -1,16 +1,10 @@
-import { encrypt } from "@/utils/helper";
+import { encrypt } from "@/lib/mock/provider-credentials";
 
 // ============================================
 // API Client Configuration
 // ============================================
 
-const getBaseUrl = (): string => {
-  const url = process.env.NEXT_PUBLIC_COMMENTS_MANAGEMENT_API_URL;
-  if (!url) {
-    throw new Error("NEXT_PUBLIC_COMMENTS_MANAGEMENT_API_URL is not defined");
-  }
-  return url;
-};
+const getBaseUrl = (): string => "/api/demo-comments";
 
 // ============================================
 // Error Classes
@@ -295,12 +289,36 @@ export const patch = async <T>(
   return handleResponse<T>(response);
 };
 
+export const put = async <T>(
+  endpoint: string,
+  body?: Record<string, unknown>,
+  options?: RequestOptions,
+): Promise<T> => {
+  const url = buildUrl(endpoint);
+  const headers = options?.token
+    ? getAuthHeaders(options.token)
+    : { "Content-Type": "application/json", ...options?.headers };
+
+  const response = await fetchWithTimeout(
+    url,
+    {
+      method: "PUT",
+      headers,
+      body: body ? JSON.stringify(body) : undefined,
+    },
+    options?.timeoutMs,
+  );
+
+  return handleResponse<T>(response);
+};
+
 // Export the base client
 export const apiClient = {
   get,
   post,
   delete: del,
   patch,
+  put,
   getAuthHeaders,
   buildUrl,
 };

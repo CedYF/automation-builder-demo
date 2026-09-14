@@ -37,6 +37,12 @@ async function save(request: Request) {
     return NextResponse.json({ error: "Request body was not valid JSON" }, { status: 400 });
   }
 
+  if (body.id !== undefined) {
+    const existing = getRule(body.id);
+    if (!existing) return NextResponse.json({ error: "Automation not found" }, { status: 404 });
+    body = { ...existing, ...body };
+  }
+
   if (typeof body.name !== "string" || body.name.trim() === "") {
     return NextResponse.json({ error: "An automation needs a name" }, { status: 400 });
   }

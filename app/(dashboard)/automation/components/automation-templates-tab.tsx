@@ -10,6 +10,7 @@ import { toast } from "sonner";
 import {
   AUTOMATION_TEMPLATES,
   TEMPLATE_CATEGORIES,
+  requiresAccountBeforeSave,
   type AutomationTemplate,
   type TemplateCategory,
 } from "../lib/automation-templates";
@@ -18,16 +19,19 @@ import { remapNodeIdPills } from "../lib/remap-node-id-pills";
 import { ServiceIcon } from "../lib/service-icons";
 import { useIsEssentialAutomationPlan } from "@/lib/automation/use-essential-automation-plan";
 import { getEssentialPlanAutomationBlockReason } from "@/lib/automation/essential-plan-automation-access";
-import { canManageAutomationRules } from "@/lib/automation/automation-access";
+import { canManageAutomationBySource, resolveAutomationAccessScope } from "@/lib/automation/automation-access";
 import { useUser } from "@/lib/providers/user-provider";
 import type { AutomationNode } from "../contexts/automation-context";
 
 interface AutomationTemplatesTabProps {
   onUseTemplate: (templateId: string) => void;
+  /** Controlled search text, typically owned by the tab strip above. */
+  searchQuery?: string;
 }
 
 interface AutomationTemplatesContentProps {
   onUseTemplate: (templateId: string) => void;
+  searchQuery?: string;
 }
 
 const categoryColors: Record<TemplateCategory, string> = {
@@ -39,17 +43,31 @@ const categoryColors: Record<TemplateCategory, string> = {
 
 const PINNED_TEMPLATE_IDS = new Set(["template-hunch-style-sheet-template-ads"]);
 
-export function AutomationTemplatesContent({ onUseTemplate }: AutomationTemplatesContentProps) {
+export function AutomationTemplatesContent({ onUseTemplate, searchQuery = "" }: AutomationTemplatesContentProps) {
   const [selectedCategory, setSelectedCategory] = useState<TemplateCategory | "all">("all");
   const [creatingTemplateId, setCreatingTemplateId] = useState<string | null>(null);
   const isEssentialPlan = useIsEssentialAutomationPlan();
   const { extendedUser } = useUser();
-  const canManageAutomations = canManageAutomationRules(extendedUser?.role);
+  // Comment-only roles (ADM-11300) see the comment recipes alone: every other
+  // card would be locked, and the category pills would only point at locks.
+  const isCommentsOnly = resolveAutomationAccessScope(extendedUser?.role) === "comments-only";
+  const offeredTemplates = isCommentsOnly
+    ? AUTOMATION_TEMPLATES.filter(isCommentAutomationTemplate)
+    : AUTOMATION_TEMPLATES;
+  const canUseTemplate = (template: AutomationTemplate): boolean =>
+    canManageAutomationBySource(extendedUser?.role, isCommentAutomationTemplate(template) ? "comment" : "flow");
 
-  const filtered =
-    selectedCategory === "all"
-      ? AUTOMATION_TEMPLATES
-      : AUTOMATION_TEMPLATES.filter((t) => t.category === selectedCategory);
+  const categoryFiltered =
+    selectedCategory === "all" || isCommentsOnly
+      ? offeredTemplates
+      : offeredTemplates.filter((t) => t.category === selectedCategory);
+
+  const normalizedQuery = searchQuery.trim().toLowerCase();
+  const filtered = normalizedQuery
+    ? categoryFiltered.filter(
+        (t) => t.name.toLowerCase().includes(normalizedQuery) || t.description.toLowerCase().includes(normalizedQuery),
+      )
+    : categoryFiltered;
 
   // Featured templates always come first; pinned operational templates follow.
   const sorted = [...filtered].sort((a, b) => getTemplateSortRank(b) - getTemplateSortRank(a));
@@ -70,7 +88,7 @@ export function AutomationTemplatesContent({ onUseTemplate }: AutomationTemplate
       )}
 
       {/* Category filter pills */}
-      <div className="flex flex-wrap items-center gap-2 mb-6">
+      <div className={cn("mb-6 flex flex-wrap items-center gap-2", isCommentsOnly && "hidden")}>
         <button
           onClick={() => setSelectedCategory("all")}
           className={cn(
@@ -101,6 +119,7 @@ export function AutomationTemplatesContent({ onUseTemplate }: AutomationTemplate
       {/* Template cards grid */}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
         {sorted.map((template) => {
+          const canManageAutomations = canUseTemplate(template);
           const essentialBlockReason = isEssentialPlan ? getEssentialPlanAutomationBlockReason(template.flow) : null;
           const displaySteps =
             template.displaySteps ??
@@ -177,19 +196,24 @@ export function AutomationTemplatesContent({ onUseTemplate }: AutomationTemplate
                         // seeded flow builder instead of creating a draft rule immediately.
                         if (isCommentAutomationTemplate(template)) {
                           onUseTemplate(template.id);
+                          return;
+                        }
+                        // Same treatment for templates whose ad account cloneTemplateNodes
+                        // cannot prefill (it only knows Meta). Persisting one immediately
+                        // would create a rule the table's on/off toggle can activate while
+                        // its trigger still has accountId: "", which then fails on every
+                        // scheduled run.
+                        if (requiresAccountBeforeSave(template)) {
+                          onUseTemplate(template.id);
                           toast.success(`${template.name} loaded`, {
-                            description: "Pick a page, then save to create this automation.",
-                            position: "top-right",
+                            description: "Pick your ad account, then save to create this automation.",
                           });
                           return;
                         }
                         const createdRuleId = await createAutomationFromTemplate(template, extendedUser);
                         onUseTemplate(String(createdRuleId));
-                        toast.success(`${template.name} created`, { position: "top-right" });
                       } catch (error) {
-                        toast.error(error instanceof Error ? error.message : "Failed to create automation", {
-                          position: "top-right",
-                        });
+                        toast.error(error instanceof Error ? error.message : "Failed to create automation");
                       } finally {
                         setCreatingTemplateId(null);
                       }
@@ -222,14 +246,16 @@ export function AutomationTemplatesContent({ onUseTemplate }: AutomationTemplate
       </div>
 
       {filtered.length === 0 && (
-        <div className="text-center text-muted-foreground py-12 text-sm">No templates in this category yet.</div>
+        <div className="text-center text-muted-foreground py-12 text-sm">
+          {normalizedQuery ? "No templates match your search." : "No templates in this category yet."}
+        </div>
       )}
     </div>
   );
 }
 
-export function AutomationTemplatesTab({ onUseTemplate }: AutomationTemplatesTabProps) {
-  return <AutomationTemplatesContent onUseTemplate={onUseTemplate} />;
+export function AutomationTemplatesTab({ onUseTemplate, searchQuery }: AutomationTemplatesTabProps) {
+  return <AutomationTemplatesContent onUseTemplate={onUseTemplate} searchQuery={searchQuery} />;
 }
 
 function getTemplateSortRank(template: AutomationTemplate): number {
@@ -285,7 +311,7 @@ async function createAutomationFromTemplate(template: AutomationTemplate, extend
  * filled in, and every cross-step `{{nodeId.field}}` re-pointed at the new ids.
  *
  * Exported for tests — re-minting ids without re-mapping the references silently
- * breaks any template whose steps refer to each other.
+ * breaks any template whose steps refer to each other (ADM-10104).
  */
 export function cloneTemplateNodes(
   nodes: ReadonlyArray<AutomationNode>,
@@ -294,7 +320,7 @@ export function cloneTemplateNodes(
   // Node ids are re-minted below, so any `{{oldId.field}}` a template config
   // uses to reference a sibling step has to be re-pointed at the same step's
   // new id. Without this the reference dangles and resolves to nothing at
-  // execution time.
+  // execution time (ADM-10104).
   const clonedIdByTemplateId = new Map(nodes.map((node, index) => [node.id, `node-${Date.now()}-${index}`]));
 
   return nodes.map((node, index) => {

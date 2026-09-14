@@ -41,3 +41,6 @@ export function useIsEssentialAutomationPlan(): boolean {
   const sessionEmail = extendedUser?.debug || extendedUser?.email;
   return shouldApplyEssentialAutomationRestrictions(sessionEmail, effectivePlanName);
 }
+
+/** The standalone demo has no billing trial. */
+export function useAutomationTrialStatus(): { state: "none" | "active" | "expired"; daysRemaining: number } { return { state: "none", daysRemaining: 0 }; }

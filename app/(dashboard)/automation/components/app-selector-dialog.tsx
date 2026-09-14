@@ -8,12 +8,15 @@ import { Search } from "lucide-react";
 import Image from "next/image";
 import Meta from "@/components/ui/icons/meta";
 import { toast } from "sonner";
+import { type AutomationNodeType, isStepNodeType } from "@/lib/automation/flow-control-steps";
 
 interface AppSelectorDialogProps {
   open: boolean;
   onOpenChange(open: boolean): void;
-  nodeType: "trigger" | "action" | "filter" | "delay";
+  nodeType: AutomationNodeType;
   onSelectApp(appId: string): void;
+  /** When set, only these services are offered for the pending node. */
+  allowedServices?: readonly string[];
   disabledServices?: string[];
   /** Shown as locked; Essential plan only allows Performance Monitoring (Meta Ads). */
   planLockedServices?: string[];
@@ -25,6 +28,7 @@ const services = {
     { value: "google-sheets", label: "Google Sheets" },
     { value: "google-drive", label: "Google Drive" },
     { value: "notion", label: "Notion" },
+    { value: "monday", label: "Monday.com" },
     { value: "dropbox", label: "Dropbox" },
     { value: "sharepoint", label: "SharePoint" },
     { value: "air", label: "AIR" },
@@ -33,7 +37,13 @@ const services = {
     { value: "meta-ads", label: "Meta Ads" },
     { value: "tiktok-ads", label: "TikTok Ads" },
     { value: "snapchat-ads", label: "Snapchat Ads" },
-    { value: "app", label: "the app" },
+    { value: "pinterest-ads", label: "Pinterest Ads" },
+    { value: "x-ads", label: "X (Twitter) Ads" },
+    { value: "axon-ads", label: "AppLovin Ads" },
+    { value: "google-ads", label: "Google Ads" },
+    { value: "triplewhale-ads", label: "Triple Whale" },
+    { value: "triplewhale-account", label: "Triple Whale (Account)" },
+    { value: "admanage", label: "AdManage" },
     { value: "comments", label: "Comments" },
     // { value: "box", label: "Box" },
     { value: "scheduled", label: "Scheduled (Daily/Weekly)" },
@@ -43,10 +53,13 @@ const services = {
     { value: "media-library", label: "Media Library" },
     { value: "google-sheets", label: "Google Sheets" },
     { value: "google-drive", label: "Google Drive" },
+    { value: "monday", label: "Monday.com" },
     { value: "meta-ads", label: "Meta Ads" },
     { value: "tiktok-ads", label: "TikTok Ads" },
     { value: "snapchat-ads", label: "Snapchat Ads" },
+    { value: "chatgpt-ads", label: "ChatGPT Ads" },
     { value: "pinterest-ads", label: "Pinterest Ads" },
+    { value: "x-ads", label: "X (Twitter) Ads" },
     { value: "axon-ads", label: "AppLovin Ads" },
     { value: "google-ads", label: "Google Ads" },
     { value: "comments", label: "Comments" },
@@ -55,10 +68,22 @@ const services = {
     { value: "slack", label: "Slack" },
     { value: "email", label: "Email" },
     { value: "report", label: "Report" },
+    // Flow control — selecting these retypes the node (see flow-control-steps).
+    { value: "delay", label: "Delay" },
+    { value: "approval", label: "Approval" },
   ],
   filter: [],
-  delay: [{ value: "delay", label: "Delay / Wait" }],
 };
+
+/**
+ * Delay and approval nodes share the action list so that "Change app" on one of
+ * them can reach every step app, including converting back to a real action.
+ */
+function getServicesForNodeType(nodeType: AutomationNodeType) {
+  if (nodeType === "trigger") return services.trigger;
+  if (nodeType === "filter") return services.filter;
+  return isStepNodeType(nodeType) ? services.action : [];
+}
 
 const ESSENTIAL_TRIGGER_UPGRADE_HINT =
   "Your Essential plan includes Performance Monitoring (Meta Ads) only. Upgrade to In-house or higher for other triggers.";
@@ -68,14 +93,17 @@ export function AppSelectorDialog({
   onOpenChange,
   nodeType,
   onSelectApp,
+  allowedServices,
   disabledServices = [],
   planLockedServices = [],
 }: AppSelectorDialogProps) {
   const [searchTerm, setSearchTerm] = useState("");
 
-  const availableServices = services[nodeType] || [];
-  const filteredServices = availableServices.filter((service) =>
-    service.label.toLowerCase().includes(searchTerm.toLowerCase()),
+  const availableServices = getServicesForNodeType(nodeType);
+  const filteredServices = availableServices.filter(
+    (service) =>
+      (allowedServices === undefined || allowedServices.includes(service.value)) &&
+      service.label.toLowerCase().includes(searchTerm.toLowerCase()),
   );
 
   const handleSelect = (appId: string) => {
@@ -94,7 +122,10 @@ export function AppSelectorDialog({
       <DialogContent className="max-w-[95vw] sm:max-w-lg md:max-w-2xl">
         <DialogHeader>
           <DialogTitle>Choose an app</DialogTitle>
-          <DialogDescription>Select the app you want to use for this {nodeType}</DialogDescription>
+          <DialogDescription>
+            Select the app you want to use for this{" "}
+            {nodeType === "delay" || nodeType === "approval" ? "step" : nodeType}
+          </DialogDescription>
         </DialogHeader>
 
         <div className="relative mt-4">

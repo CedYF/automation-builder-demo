@@ -1,4 +1,11 @@
 export const serviceDefinitions = {
+  "chatgpt-ads": {
+    label: "ChatGPT Ads",
+    icon: "/brand-icons/chatgpt/logo.svg",
+    iconType: "image" as const,
+    color: "#111111",
+    description: "Launch winning Meta image ads into your connected ChatGPT ad account.",
+  },
   "media-library": {
     label: "Media Library",
     icon: "🖼️",
@@ -12,7 +19,7 @@ export const serviceDefinitions = {
     iconType: "image" as const,
     color: "#4285F4",
     description:
-      "Google Drive is a secure partner with Automation Builder. Your credentials are encrypted and can be removed at any time.",
+      "Google Drive is a secure partner with Admanage. Your credentials are encrypted and can be removed at any time.",
   },
   dropbox: {
     label: "Dropbox",
@@ -20,7 +27,7 @@ export const serviceDefinitions = {
     iconType: "image" as const,
     color: "#0061FE",
     description:
-      "Dropbox is a secure partner with Automation Builder. Your credentials are encrypted and can be removed at any time.",
+      "Dropbox is a secure partner with Admanage. Your credentials are encrypted and can be removed at any time.",
   },
   sharepoint: {
     label: "SharePoint",
@@ -28,7 +35,7 @@ export const serviceDefinitions = {
     iconType: "image" as const,
     color: "#038387",
     description:
-      "SharePoint is a secure partner with Automation Builder. Your credentials are encrypted and can be removed at any time.",
+      "SharePoint is a secure partner with Admanage. Your credentials are encrypted and can be removed at any time.",
   },
   air: {
     label: "AIR",
@@ -67,13 +74,20 @@ export const serviceDefinitions = {
     color: "#111111",
     description: "Trigger automations from status changes sent by a Notion database automation webhook.",
   },
+  monday: {
+    label: "Monday.com",
+    icon: "/logos/logo-monday.svg",
+    iconType: "image" as const,
+    color: "#6161FF",
+    description: "Trigger workflows from board status changes and create or update Monday.com items.",
+  },
   "meta-ads": {
     label: "Meta",
     icon: "/icons8-meta.svg",
     iconType: "image" as const,
     color: "#0081FB",
     description:
-      "Meta Ads is a secure partner with Automation Builder. Your credentials are encrypted and can be removed at any time.",
+      "Meta Ads is a secure partner with Admanage. Your credentials are encrypted and can be removed at any time.",
   },
   "facebook-rules": {
     label: "Facebook Ad Rules",
@@ -88,7 +102,7 @@ export const serviceDefinitions = {
     iconType: "emoji" as const,
     color: "#0061D5",
     description:
-      "Box is a secure partner with Automation Builder. Your credentials are encrypted and can be removed at any time.",
+      "Box is a secure partner with Admanage. Your credentials are encrypted and can be removed at any time.",
   },
   hubspot: {
     label: "HubSpot",
@@ -96,7 +110,7 @@ export const serviceDefinitions = {
     iconType: "emoji" as const,
     color: "#FF7A59",
     description:
-      "HubSpot is a secure partner with Automation Builder. Your credentials are encrypted and can be removed at any time.",
+      "HubSpot is a secure partner with Admanage. Your credentials are encrypted and can be removed at any time.",
   },
   scheduled: {
     label: "Scheduled",
@@ -133,19 +147,19 @@ export const serviceDefinitions = {
     color: "#F97316",
     description: "Pause the automation and require manual approval before continuing.",
   },
-  app: {
-    label: "the app",
+  admanage: {
+    label: "AdManage",
     icon: "🚀",
     iconType: "emoji" as const,
     color: "#3B82F6",
-    description: "Trigger automations when ads are launched via the app.",
+    description: "Trigger automations when ads are launched via AdManage.",
   },
   comments: {
     label: "Comments",
     icon: "💬",
     iconType: "emoji" as const,
     color: "#0EA5E9",
-    description: "Automate Facebook and Instagram comment replies, hides, and deletes.",
+    description: "Automate Facebook and Instagram comment replies, likes, hides, and deletes.",
   },
   manual: {
     label: "Manual Trigger",
@@ -173,7 +187,15 @@ export const serviceDefinitions = {
     icon: "/pinterest-logo.svg",
     iconType: "image" as const,
     color: "#E60023",
-    description: "Launch ads on Pinterest from your winning Facebook creatives.",
+    description: "Pause or enable Pinterest ads by name, or launch your winning Facebook creatives on Pinterest.",
+  },
+  "x-ads": {
+    label: "X (Twitter) Ads",
+    icon: "𝕏",
+    iconType: "emoji" as const,
+    color: "#000000",
+    description:
+      "Monitor X promoted-post performance and promote your winning creatives as X posts through an existing or new X campaign.",
   },
   "axon-ads": {
     label: "AppLovin Ads",
@@ -181,6 +203,20 @@ export const serviceDefinitions = {
     iconType: "emoji" as const,
     color: "#6366F1",
     description: "Launch ads on AppLovin from your winning Facebook creatives.",
+  },
+  "triplewhale-ads": {
+    label: "Triple Whale",
+    icon: "🐋",
+    iconType: "emoji" as const,
+    color: "#00C2CB",
+    description: "Trigger on Triple Whale's pixel-attributed ROAS instead of Meta's own ad-reported attribution.",
+  },
+  "triplewhale-account": {
+    label: "Triple Whale (Account)",
+    icon: "🐋",
+    iconType: "emoji" as const,
+    color: "#00C2CB",
+    description: "Trigger on Triple Whale's shop-wide summary metrics (blended ROAS, attributed revenue, AOV, ...).",
   },
   "google-ads": {
     label: "Google Ads",

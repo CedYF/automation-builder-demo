@@ -10,16 +10,13 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { MoreVertical, Zap, Play, Filter, Trash2, Clock, ShieldCheck, Layers } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { MoreVertical, Zap, Play, Filter, Trash2, Clock, ShieldCheck, Layers, AlertTriangle } from "lucide-react";
 import { getServiceInfo } from "../lib/service-icons";
-import {
-  getServiceTheme,
-  getNodeTypeAccent,
-  nodeTypeBadgeStyles,
-  statusColors,
-  statusGlowColors,
-} from "../lib/service-themes";
+import { getServiceTheme, getNodeTypeAccent, nodeTypeBadgeStyles } from "../lib/service-themes";
 import { getNodeSummary } from "../lib/node-summary";
+import { getBuilderStepReadiness } from "../lib/builder-readiness";
+import { BuilderStepStatusPill } from "./builder-step-status-pill";
 import { ADSCAN_NEW_COMPETITOR_AD_EVENT_LEGACY, ADSCAN_NEW_COMPETITOR_AD_EVENT } from "../lib/adscan-events";
 import { useCustomMetricsById } from "../lib/use-custom-metrics-by-id";
 import { cn } from "@/lib/utils";
@@ -85,7 +82,7 @@ function getEventDisplayText(node: AutomationNode): string {
     return count > 0 ? `Create Media from Templates • ${count}` : "Create Media from Templates";
   }
 
-  // Adscan trigger was renamed in an earlier fix — render legacy rules with the new label.
+  // Adscan trigger was renamed in ADM-5914 — render legacy rules with the new label.
   if (node.service === "adscan" && node.event === ADSCAN_NEW_COMPETITOR_AD_EVENT_LEGACY) {
     return ADSCAN_NEW_COMPETITOR_AD_EVENT;
   }
@@ -149,26 +146,38 @@ export function FlowNode({ node, index, onNodeClick, isSelected = false }: FlowN
   const customMetricsById = useCustomMetricsById();
   const summary = getNodeSummary(node, { customMetricsById });
 
-  const isConfigured = node.service && node.event;
-  const status = isInvalid ? "error" : isConfigured ? "configured" : "warning";
+  // Same gate the config panel uses for its Preview CTA, so the card's pill and
+  // the step's Setup tab never disagree about whether it is finished.
+  const readiness = getBuilderStepReadiness({
+    service: node.service,
+    event: node.event,
+    nodeType: node.type,
+    config: node.config,
+    flowAccountId: flow.selectedAccountId,
+    hasError: isInvalid,
+  });
   const isCreateMediaStep =
     node.service === "meta-ads" &&
     (node.event === "Create Media from Templates" || node.event === "Create Dynamic Media from Templates");
-  const serviceLabel = isCreateMediaStep ? "the app" : serviceInfo?.label;
+  const serviceLabel = isCreateMediaStep ? "AdManage" : serviceInfo?.label;
 
-  // Render the service icon
+  // The event now titles the card, so the app it runs on moves to the subtitle
+  // alongside whatever the step summarises ("Comments · Daily 9am").
+  const subtitle = [serviceLabel, summary.subtitle].filter(Boolean).join(" · ");
+
+  // Render the service icon, sized for the card's 36px mark
   const renderServiceIcon = () => {
     if (!node.service) {
-      return <Icon className="h-6 w-6 text-muted-foreground" />;
+      return <Icon className="h-[18px] w-[18px] text-muted-foreground" />;
     }
 
     if (isCreateMediaStep) {
-      return <Layers className="h-6 w-6 text-primary" />;
+      return <Layers className="h-[18px] w-[18px] text-primary" />;
     }
 
     // Special handling for Meta icon
     if (node.service === "meta-ads") {
-      return <Meta className="h-7 w-7" grayscale={false} />;
+      return <Meta className="h-5 w-5" grayscale={false} />;
     }
 
     // Use emoji or image from service info
@@ -179,12 +188,12 @@ export function FlowNode({ node, index, onNodeClick, isSelected = false }: FlowN
         (typeof serviceInfo.icon === "string" &&
           (serviceInfo.icon.startsWith("/") || serviceInfo.icon.startsWith("http")))
       ) {
-        return <img src={serviceInfo.icon} alt={serviceInfo.label} className="h-7 w-7 object-contain" />;
+        return <img src={serviceInfo.icon} alt={serviceInfo.label} className="h-5 w-5 object-contain" />;
       }
-      return <span className="text-2xl">{serviceInfo.icon}</span>;
+      return <span className="text-lg leading-none">{serviceInfo.icon}</span>;
     }
 
-    return <Icon className="h-6 w-6 text-muted-foreground" />;
+    return <Icon className="h-[18px] w-[18px] text-muted-foreground" />;
   };
 
   return (
@@ -199,7 +208,7 @@ export function FlowNode({ node, index, onNodeClick, isSelected = false }: FlowN
         "group relative cursor-pointer overflow-hidden rounded-xl bg-card transition-all duration-200 ease-out",
         "border shadow-sm hover:-translate-y-0.5",
         isSelected
-          ? cn("border-primary shadow-lg ring-2 ring-offset-1 ring-offset-background", accent.selectedRing)
+          ? cn("border-primary shadow-lg ring-[3px] ring-offset-0", accent.selectedRing)
           : "border-border hover:border-gray-300 hover:shadow-md",
         // Live "assistant is building this step" pulse
         isAssistantBuilding &&
@@ -220,11 +229,11 @@ export function FlowNode({ node, index, onNodeClick, isSelected = false }: FlowN
         )}
       />
 
-      {/* Header with step number, type badge, and status */}
-      <div className="flex items-center justify-between px-4 pt-3">
-        <div className="flex items-center gap-2">
-          {/* Step number circle */}
-          <span className="flex h-6 w-6 items-center justify-center rounded-full bg-muted text-xs font-bold text-muted-foreground">
+      {/* Header — step number, type badge, and the readiness pill */}
+      <div className="flex items-center justify-between gap-2 px-3.5 pt-3">
+        <div className="flex min-w-0 items-center gap-2.5">
+          {/* Step number */}
+          <span className="flex h-[22px] w-[22px] flex-shrink-0 items-center justify-center rounded-md bg-muted text-xs font-semibold text-muted-foreground">
             {index + 1}
           </span>
 
@@ -232,7 +241,7 @@ export function FlowNode({ node, index, onNodeClick, isSelected = false }: FlowN
           <Badge
             variant="outline"
             className={cn(
-              "text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5",
+              "px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-[0.07em]",
               typeBadgeStyle.bg,
               typeBadgeStyle.text,
               typeBadgeStyle.border,
@@ -242,24 +251,20 @@ export function FlowNode({ node, index, onNodeClick, isSelected = false }: FlowN
           </Badge>
         </div>
 
-        {/* Status indicator dot with a soft glow ring */}
-        <div className="flex items-center gap-2">
-          <div
-            className={cn(
-              "h-2 w-2 rounded-full ring-2 transition-colors",
-              statusColors[status],
-              statusGlowColors[status],
-            )}
-          />
-        </div>
+        <BuilderStepStatusPill
+          status={readiness.status}
+          label={readiness.label}
+          title={readiness.blocker ?? undefined}
+          className="flex-shrink-0"
+        />
       </div>
 
-      {/* Body with icon, content, and menu */}
-      <div className="flex items-start gap-3 p-4 pt-3">
+      {/* Body — service mark, what this step does, and the row menu */}
+      <div className="flex items-center gap-3 px-3.5 pb-3 pt-2.5">
         {/* Icon container with colored background */}
         <div
           className={cn(
-            "flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-xl shadow-sm ring-1 ring-black/[0.04]",
+            "flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-[9px] shadow-sm ring-1 ring-black/[0.04]",
             "transition-all duration-200 group-hover:scale-105 group-hover:shadow-md",
             node.service ? theme.iconBg : "bg-muted",
           )}
@@ -267,17 +272,14 @@ export function FlowNode({ node, index, onNodeClick, isSelected = false }: FlowN
           {renderServiceIcon()}
         </div>
 
-        {/* Content */}
-        <div className="flex-1 min-w-0 pt-0.5">
-          <h3 className="font-semibold text-foreground truncate text-sm md:text-base">
-            {serviceLabel ? `${serviceLabel} · ${getEventDisplayText(node)}` : "Choose an app"}
+        {/* Content — the event leads, the app and its settings sit underneath */}
+        <div className="min-w-0 flex-1">
+          <h3 className="truncate text-[15px] font-semibold leading-tight text-foreground">
+            {serviceLabel ? getEventDisplayText(node) : "Choose an app"}
           </h3>
-          {summary.subtitle && <p className="text-xs text-muted-foreground truncate mt-0.5">{summary.subtitle}</p>}
-          {!summary.subtitle && serviceLabel && (
-            <p className="text-xs text-muted-foreground truncate mt-0.5">{getEventDisplayText(node)}</p>
-          )}
+          {subtitle && <p className="mt-1 truncate text-xs text-muted-foreground">{subtitle}</p>}
           {isMediaBufferTrigger && bufferedCount !== null && (
-            <div className="flex items-center gap-1 mt-1">
+            <div className="mt-1 flex items-center gap-1">
               <Layers className="h-3 w-3 text-muted-foreground/70" />
               <span className="text-[10px] font-medium text-muted-foreground/70">
                 Buffered: {bufferedCount} / {groupThreshold}
@@ -292,7 +294,8 @@ export function FlowNode({ node, index, onNodeClick, isSelected = false }: FlowN
             <Button
               variant="ghost"
               size="sm"
-              className="h-8 w-8 p-0 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
+              className="h-8 w-8 flex-shrink-0 p-0 opacity-0 transition-opacity focus-visible:opacity-100 group-hover:opacity-100"
+              aria-label="Step actions"
             >
               <MoreVertical className="h-4 w-4 text-muted-foreground" />
             </Button>
@@ -312,24 +315,48 @@ export function FlowNode({ node, index, onNodeClick, isSelected = false }: FlowN
         </DropdownMenu>
       </div>
 
-      {/* Chips row — active settings summary (e.g. "ROAS drops >20%", "All campaigns", "min £50") */}
-      {summary.badges.length > 0 && (
-        <div className="flex flex-wrap gap-1.5 border-t border-border/60 px-4 py-2.5">
-          {summary.badges.map((badge, i) => (
-            <span
-              key={i}
-              className={cn(
-                "inline-flex items-center rounded-md px-2 py-0.5 text-[11px] font-medium",
-                badge.tone === "warning"
-                  ? "bg-amber-50 text-amber-800 ring-1 ring-inset ring-amber-200"
-                  : badge.tone === "muted"
-                    ? "bg-muted text-muted-foreground"
-                    : "bg-primary/10 text-primary ring-1 ring-inset ring-primary/15",
-              )}
-            >
-              {badge.label}
+      {/* Chips row — the outstanding gap first, then the active settings summary */}
+      {(readiness.blocker || summary.badges.length > 0) && (
+        <div className="flex flex-wrap items-center gap-1.5 border-t border-border/60 bg-muted/30 px-3.5 py-2.5">
+          {readiness.blocker && (
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-800 ring-1 ring-inset ring-amber-200">
+              <AlertTriangle className="h-3 w-3" />
+              {readiness.blocker}
             </span>
-          ))}
+          )}
+          {summary.badges.map((badge, i) => {
+            const badgeEl = (
+              <span
+                className={cn(
+                  "inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-medium",
+                  badge.tone === "warning"
+                    ? "bg-amber-50 text-amber-800 ring-1 ring-inset ring-amber-200"
+                    : badge.tone === "muted"
+                      ? "bg-muted text-muted-foreground ring-1 ring-inset ring-border"
+                      : "bg-card text-foreground ring-1 ring-inset ring-border",
+                )}
+              >
+                {badge.label}
+              </span>
+            );
+
+            if (!badge.details || badge.details.length === 0) {
+              return <span key={i}>{badgeEl}</span>;
+            }
+
+            return (
+              <Tooltip key={i}>
+                <TooltipTrigger asChild>{badgeEl}</TooltipTrigger>
+                <TooltipContent side="top">
+                  <ul className="list-none space-y-0.5">
+                    {badge.details.map((detail) => (
+                      <li key={detail}>{detail}</li>
+                    ))}
+                  </ul>
+                </TooltipContent>
+              </Tooltip>
+            );
+          })}
         </div>
       )}
     </div>

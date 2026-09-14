@@ -15,6 +15,7 @@ export type CardKind =
   | "performanceThreshold"
   | "creativeConcepts"
   | "dashboardWidget"
+  | "question"
   | "generic";
 
 /** Lifecycle of a single tool call within an assistant turn. */
@@ -59,7 +60,16 @@ export interface ToolCallRecord {
   readonly latencyMs?: number;
   readonly card?: CardDescriptor;
   readonly errorMessage?: string;
+  /**
+   * When Meta Ads MCP failed (e.g. account not in rollout) but AdManage MAPI
+   * recovered the read, keep the Meta error for /admin/mcp-usage feedback while
+   * status stays `done` for the chat UX / model.
+   */
+  readonly metaMcpError?: string;
+  readonly metaMcpFallbackTool?: string;
   readonly writeOutcome?: ToolCallWriteOutcome;
+  /** UI-only: a later provider read confirmed a timed-out rename. */
+  readonly verifiedByRead?: boolean;
 }
 
 export interface UserMessageContent {

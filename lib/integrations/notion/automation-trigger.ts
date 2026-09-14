@@ -1,8 +1,12 @@
+import { flattenNotionProperties } from "./flatten-properties";
+import { readNotionPropertyValue } from "./read-property-value";
+
 /** Stable service/event identifiers persisted in Notion automation flows. */
 export const NOTION_AUTOMATION_TRIGGER = Object.freeze({
   service: "notion",
   event: "Status Changed",
   defaultStatusProperty: "Status",
+  defaultTemplateProperty: "Template",
 });
 const VIDEO_FILE_EXTENSIONS = new Set(["mp4", "mov", "m4v", "webm", "avi", "mkv"]);
 
@@ -75,9 +79,9 @@ export async function triggerNotionStatusAutomations(
   const results = await Promise.all(
     matchingRules.map((match) => executeMatchingRule(match, options.scope, options.dependencies)),
   );
-  const failures = results
-    .filter((result): result is { ruleId: number; error: string } => result.error !== null)
-    .map(({ ruleId, error }) => ({ ruleId, error }));
+  const failures = results.flatMap((result) =>
+    result.error === null ? [] : [{ ruleId: result.ruleId, error: result.error }],
+  );
 
   return {
     matched: matchingRules.length,
@@ -114,7 +118,9 @@ function findMatchingRule(
   const config = readRecord(triggerNode.config) ?? {};
   const statusProperty =
     readNonEmptyString(config.notionStatusProperty) ?? NOTION_AUTOMATION_TRIGGER.defaultStatusProperty;
-  const triggerOutput = buildTriggerOutput({ event, assets, statusProperty });
+  const templateProperty =
+    readNonEmptyString(config.notionTemplateProperty) ?? NOTION_AUTOMATION_TRIGGER.defaultTemplateProperty;
+  const triggerOutput = buildTriggerOutput({ event, assets, statusProperty, templateProperty });
   if (!doesDatabaseMatch(config, triggerOutput.databaseId)) return [];
   if (!doesStatusMatch(config, triggerOutput.status)) return [];
 
@@ -142,11 +148,14 @@ function buildTriggerOutput(input: {
   readonly event: unknown;
   readonly assets: ReadonlyArray<NotionTriggerAsset>;
   readonly statusProperty: string;
+  readonly templateProperty: string;
 }): Readonly<Record<string, unknown>> {
   const data = readRecord(readRecord(input.event)?.data) ?? {};
   const properties = readNotionProperties(data);
+  const flattened = flattenNotionProperties(properties, input.templateProperty);
   const firstAsset = input.assets[0];
   const pageId = readNonEmptyString(data.id) ?? readEntityId(input.event) ?? "";
+  const pageTitle = readPageTitle(properties) ?? firstAsset?.name ?? pageId;
 
   return {
     provider: NOTION_AUTOMATION_TRIGGER.service,
@@ -154,11 +163,11 @@ function buildTriggerOutput(input: {
     pageId,
     databaseId: readDatabaseId(data),
     pageUrl: readNonEmptyString(data.url) ?? "",
-    pageTitle: readPageTitle(properties) ?? firstAsset?.name ?? pageId,
+    pageTitle,
     statusProperty: input.statusProperty,
     status: readStatusProperty(properties, input.statusProperty) ?? "",
     assetId: pageId,
-    assetName: firstAsset?.name ?? pageId,
+    assetName: flattened.aliases.adName ?? firstAsset?.name ?? pageTitle,
     mediaUrl: firstAsset?.url ?? "",
     fileUrl: firstAsset?.url ?? "",
     mediaType: inferMediaType(firstAsset?.url),
@@ -170,6 +179,9 @@ function buildTriggerOutput(input: {
       propertyName: asset.propertyName,
     })),
     notionProperties: properties,
+    mapped: flattened.mapped,
+    ...flattened.camelCase,
+    ...flattened.aliases,
   };
 }
 
@@ -188,30 +200,13 @@ function readEntityId(event: unknown): string | null {
 }
 
 function readStatusProperty(properties: Readonly<Record<string, unknown>>, propertyName: string): string | null {
-  const propertyValue = findPropertyValue(properties, propertyName);
-  return readNamedPropertyValue(propertyValue);
+  return readNotionPropertyValue(findPropertyValue(properties, propertyName));
 }
 
 function findPropertyValue(properties: Readonly<Record<string, unknown>>, propertyName: string): unknown {
   if (properties[propertyName] !== undefined) return properties[propertyName];
   const normalizedName = propertyName.trim().toLocaleLowerCase();
   return Object.entries(properties).find(([name]) => name.trim().toLocaleLowerCase() === normalizedName)?.[1];
-}
-
-function readNamedPropertyValue(propertyValue: unknown): string | null {
-  const directValue = readNonEmptyString(propertyValue);
-  if (directValue) return directValue;
-
-  const property = readRecord(propertyValue);
-  if (!property) return null;
-  const name = readNonEmptyString(property.name);
-  if (name) return name;
-
-  for (const key of ["status", "select", "value"] as const) {
-    const nestedName = readNamedPropertyValue(property[key]);
-    if (nestedName) return nestedName;
-  }
-  return null;
 }
 
 function readPageTitle(properties: Readonly<Record<string, unknown>>): string | null {
@@ -255,9 +250,12 @@ function inferMediaType(url: string | undefined): "video" | "image" | "" {
   return extension && VIDEO_FILE_EXTENSIONS.has(extension) ? "video" : "image";
 }
 
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 function readRecord(value: unknown): Readonly<Record<string, unknown>> | null {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
-  return value as Readonly<Record<string, unknown>>;
+  return isRecord(value) ? value : null;
 }
 
 function readNonEmptyString(value: unknown): string | null {

@@ -189,7 +189,7 @@ function SuggestionCard({
         <span
           className={cn(
             "flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold",
-            suggestionRankBadgeClass(isPrimary ?? false),
+            suggestionRankBadgeClass(Boolean(isPrimary)),
           )}
         >
           {suggestion.rank}

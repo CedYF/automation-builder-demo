@@ -23,7 +23,7 @@ import { AdLimitExceededCard } from "./ad-limit-exceeded-card";
 import { TriggerMediaPreview } from "./trigger-media-preview";
 import { normalizeAdscanEventForDisplay } from "../lib/adscan-events";
 
-interface PendingApproval {
+export interface PendingApproval {
   id: number;
   approvalToken: string;
   pausedAtNodeId: string;

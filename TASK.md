@@ -1,133 +1,118 @@
-# Challenge: make automations work through chat
+# Challenge: make the automation agent measurably better
 
-## The problem
+Customers describe an automation, work through questions, and expect a working result they can understand and trust. A completed chat stream does not tell us whether they got there.
 
-Our automation builder is too hard to start with.
+Your job is to **add useful logging and a quality dashboard, investigate customer problems, turn them into evals, and improve the experience**. The aim is to help more customers reach their first successful automation and keep getting value from it.
 
-To create one rule you pick a trigger, pick an app from a dialog, fill in a form,
-add the next step, fill in another form. There are 51 config sections. Most people
-open it, look at the empty canvas, and leave.
+Start from the UI in this repository. The home, chat entry, assistant and builder have been refreshed from the product. This is a product engineering and agent quality challenge, not a request to recreate a competitor's interface.
 
-![The builder today](docs/screenshots/builder-with-assistant-dock.jpg)
+## 1. Understand the customer problems
 
-There is an assistant, but it is a narrow strip you only see if you click **Ask
-AI**. It fights the canvas and the settings panel for space. Chat is an add-on to
-a form product.
+Read [the customer cases](docs/customer-cases.md). They are anonymized, paraphrased examples from our automation-agent feedback channel. They include observed interaction problems, not proof that a provider execution failed.
 
-## The task
+Choose at least three cases. Reproduce the current behavior, identify where the journey breaks, and explain which problem you would fix first and why. Look beyond model answers: missing UI feedback, confusing controls, lost context, unsupported capabilities and unclear next steps all count.
 
-Flip it. **You describe what you want, chat builds it.**
+Distinguish what the transcript proves, what the flow state proves, and what would require execution evidence. Do not assume “zero tool errors” means the customer succeeded.
 
-- Chat is how you create an automation.
-- The nodes stay, but only for **editing afterwards** — to check what was built
-  and change a detail. Never to create from scratch.
-- Fewer settings on screen. The agent asks for what it needs; it does not show
-  you every field.
+## 2. Add logging that explains the journey
 
-## What good looks like
+Instrument the real demo interaction path. A dashboard backed only by hardcoded totals is not enough. Make it possible to follow one attempt from prompt to outcome and connect related retries without double-counting them.
 
-The screenshots in [`docs/reference/`](docs/reference/) are the bar. Match the
-feel, not the pixels.
+Capture enough to answer:
 
-### Ask, don't assume
+- What was the customer trying to do, on which platform and with which existing draft?
+- What question did we ask, why, and did they answer it?
+- Which tools ran, how long did they take, and what changed in the draft?
+- Was the result complete, blocked, unsupported, cancelled, or still waiting?
+- Did the customer preview, save, activate and reach a successful run? These are separate events.
+- Did they retry, restart, abandon the attempt, or come back later?
 
-The agent asks the few things it can't work out, as a card in the chat. Options
-with a recommended default, or a text box. Never a settings form.
+Define a typed event contract with event ID, time, session/attempt/turn correlation, flow revision, model/prompt version where applicable, timing, outcome and a useful error category. Handle streaming interruption and duplicate delivery. Do not log secrets or unrestricted customer payloads. Redact before persistence or export, not just in the UI.
 
-![Inline clarifying question](docs/reference/01-clarifying-question.png)
+Use local persistence and a resettable fixture importer so reviewers need no accounts or keys. Document storage, retention and the point where a production event sink would attach. The product uses structured Axiom logs; this demo must not send events to production.
 
-![Second question and the writing status](docs/reference/02-second-question-and-writing.png)
+## 3. Build a dashboard that helps someone decide what to fix
 
-![Free-text question](docs/reference/04-freetext-question.png)
+A product engineer should be able to:
 
-If the answer is still vague, it asks again instead of guessing.
+1. See where attempts drop out of the prompt → draft → preview → save → activate → successful-run journey.
+2. Filter by problem category, platform, version, time range and outcome.
+3. Open an attempt to see its timeline, questions, tool results, draft changes and customer-visible outcome.
+4. Identify repeated failures or friction, record a review label, and turn a reviewed case into an eval.
+5. Compare the baseline with your improvement, including regressions and sample size.
 
-### Show the work
+Include loading, empty, no-results and error states. Use plain labels and readable summaries, with technical detail available on demand. Distinguish observed, simulated and unknown outcomes everywhere. A seeded successful run is not proof that a live ad was changed.
 
-Thinking is collapsed but openable. Tool calls appear as steps you can expand,
-with real results — not a spinner.
+## 4. Set up evals from the problems
 
-![Tool calls with results and a progress checklist](docs/reference/05-tool-progress.png)
+Create a versioned, runnable dataset and evaluator. Each case should contain:
 
-### Give a real answer
+- An anonymous case ID and problem category.
+- Initial conversation, selected account/platform, existing flow and available capabilities.
+- Input turns, including answers to clarification questions where relevant.
+- Expected behavior and explicit failure conditions.
+- Checks against the resulting flow, tool sequence and user-visible response.
 
-A proper written result, with follow-up suggestions you can click.
+Use deterministic assertions for things such as preserved nodes, schedule/timezone, resolved identifiers, required steps and truthful state labels. If you add a model judge for clarity or helpfulness, document the rubric, judge version, uncertainty and human calibration. A model judge is optional; the default suite must run without API keys.
 
-![Answer with follow-up suggestions](docs/reference/03-answer-and-followups.png)
+Include multi-turn cases, ambiguity, interruption/retry and an unsupported request. Keep a small held-out regression set. Record baseline and changed results against the same inputs and versions. Report passes, failures and regressions per category; do not hide a serious regression behind an average score.
 
-Long output opens as a document beside the chat, not a wall of text in it.
+Provide one command to run the suite, a machine-readable result, and a human-readable comparison. Include an example of converting a reviewed dashboard attempt into a sanitized eval fixture. The existing unit tests are useful, but they are not a substitute for evaluating the end-to-end interaction.
 
-![Document card and split view](docs/reference/06-document-card-and-split-view.jpg)
+## 5. Make and demonstrate an improvement
 
-![Summary with the document open](docs/reference/07-summary-and-split-document.jpg)
+Ship at least one focused improvement to the agent or UI, driven by your findings. For example:
 
-[`sample-output-document.md`](docs/reference/sample-output-document.md) is a real
-example of the writing quality.
+- Resolve an account or template by name using an inline picker rather than demanding a raw ID.
+- Keep the current draft intact when a customer asks a follow-up question.
+- Make template selection and text variations visible and verifiable.
+- Show exactly what is drafted, saved, active or blocked, with the next action beside it.
+- Ask for a missing timezone without losing the customer's requested days and time.
 
-### Then manage it
+Show the before/after journey and eval results. Preserve save, rename, preview, run and activation behavior within the mock's documented limits. Keep one source of truth for the flow in `automation-context.tsx`.
 
-Saved automations become simple rows: schedule in plain words, paused state, and
-anything blocking them shown right there.
+## How this connects to retention
 
-![Automations list](docs/reference/09-automations-tab-list.jpg)
+Define the mechanism you expect to improve: fewer abandoned clarification loops, faster time to a valid draft, more saved automations reaching a first successful run, or fewer repeated failures.
 
-![Empty state with starter suggestions](docs/reference/08-automations-tab-empty.jpg)
+Describe how you would measure activation and repeat successful usage at 7 and 28 days using eligible cohorts, explicit denominators and an observation window. A customer who has not had time to return is not churned. Offline eval scores and demo data cannot establish a retention lift; explain the production experiment needed to test your hypothesis, with failure and latency guardrails.
 
-## Rules
+## Deliverables
 
-- The chat must save a **real automation**, using the trigger/filter/action
-  structure already in the repo. `automation-context.tsx` still owns it.
-- Keep a way to see and edit the steps after they're built. A panel, a tab, the
-  existing canvas — your call.
-- Save, run, rename and activate keep working.
+- Working logging, dashboard, eval suite and one demonstrated improvement.
+- Sanitized fixtures covering at least three customer problems and a held-out regression set.
+- A short investigation: evidence, diagnosis, prioritization and what remains uncertain.
+- Baseline and changed results with reproducible commands.
+- A short walkthrough showing an attempt → diagnosis → eval → improvement → comparison.
+- A concise README explaining what works, what is mocked and what you deliberately left out.
 
-## The backend
+Do a coherent slice well. You do not need to solve every customer case or build a general-purpose observability platform.
 
-There is no model here. `/api/automation-assistant/stream` and `/api/chat/*` are
-served by a mock in `app/api/[...path]/route.ts`.
+## Review criteria
 
-Either is fine:
-
-1. **Script it** — a fake responder that emits the thinking, tool-call, question
-   and answer events. Repo stays runnable with no keys.
-2. **Plug in a real model** behind an env var, still runnable without one.
-
-We're judging the design, not the model.
-
-## Where to start
-
-| Thing | File |
+| Area | What we look for |
 | --- | --- |
-| The page | `app/(dashboard)/automation/page.tsx` |
-| The assistant today | `app/(dashboard)/automation/components/assistant-panel.tsx` |
-| Assistant state | `app/(dashboard)/automation/hooks/use-automation-assistant.ts` |
-| Stream events | `lib/chat/types.ts`, `lib/chat/sse.ts` |
-| Assistant → steps | `app/(dashboard)/automation/lib/assistant-step-order.ts` |
-| Flow state, save, run | `app/(dashboard)/automation/contexts/automation-context.tsx` |
-| The automations list | `app/(dashboard)/automation/components/automations-table.tsx` |
-| Available steps | `app/(dashboard)/automation/lib/automation-registry.ts` |
-| Canvas and node card | `.../components/flow-builder.tsx`, `.../components/flow-node.tsx` |
+| Customer understanding | Correctly identifies the real friction without inventing execution outcomes. |
+| Logging | Correlated, useful events from actual interactions; safe, inspectable persistence. |
+| Dashboard UX | Makes failures understandable and the next investigation obvious. |
+| Eval quality | Reproducible cases, meaningful assertions, multi-turn coverage and visible regressions. |
+| Improvement | Demonstrably better behavior, not just a rewritten prompt or a prettier chart. |
+| Product judgment | A credible connection to activation and repeat value, with honest measurement limits. |
+| Engineering | Typed, maintainable code, useful tests, no production dependencies required. |
 
-Use `upsertAssistantNodeInFlow` in `assistant-step-order.ts` to add steps. Don't
-open a second path into the flow state.
+## Starting points
 
-## How we'll judge it
+| Area | Path |
+| --- | --- |
+| Page and tabs | `app/(dashboard)/automation/page.tsx` |
+| Automation home | `app/(dashboard)/automation/components/automation-home.tsx` |
+| Chat entry | `app/(dashboard)/automation/components/automation-chat-landing.tsx` |
+| Assistant UI | `app/(dashboard)/automation/components/assistant-panel.tsx` |
+| Streaming client | `app/(dashboard)/automation/hooks/use-automation-assistant.ts` |
+| Flow state | `app/(dashboard)/automation/contexts/automation-context.tsx` |
+| Step ordering | `app/(dashboard)/automation/lib/assistant-step-order.ts` |
+| Scripted responder | `lib/mock/assistant-script.ts` |
+| Assistant endpoint | `app/api/automation-assistant/stream/route.ts` |
+| Mock persistence | `lib/mock/automation-store.ts` |
 
-1. **Can someone build a working automation just by talking?**
-2. **Is it simpler than what we have now?**
-3. **Can you trust it** — see what it did and fix it after?
-4. **Is the code clean?** Typed, small components, no `any`.
-
-Do a narrow slice well rather than all of it badly. Tell us what you skipped.
-
-## Running it
-
-```bash
-pnpm install
-pnpm dev          # http://localhost:3000
-pnpm typecheck
-pnpm build
-```
-
-No env vars, no database, no accounts. `README.md` says what's real and what's
-mocked — read it before assuming something is broken.
+The mock responder is deliberately limited. Extend it to exercise your cases, or add an optional real model adapter behind an environment variable while keeping a no-key default. Label scripted and live-model results separately.

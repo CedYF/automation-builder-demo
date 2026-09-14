@@ -1,12 +1,11 @@
 "use client";
 
-import { useRef } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Check, Hammer, Loader2, RotateCcw, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
+import { ASSISTANT_PROSE_MARKDOWN_GATE } from "@/lib/chat/assistant-markdown-gate";
 import type { AssistantToolCall, SuggestionBuildMetadata } from "../hooks/use-automation-assistant";
 
 const BUILD_TOOL_LABELS: Record<string, string> = {
@@ -18,6 +17,8 @@ const BUILD_TOOL_LABELS: Record<string, string> = {
 };
 
 const ASSISTANT_MARKDOWN_COMPONENTS: Components = {
+  // SEC-012b (ADM-10938): gated `img` renderer, paired with the `urlTransform` at the call site.
+  ...ASSISTANT_PROSE_MARKDOWN_GATE.components,
   p: ({ children }) => <p className="my-1.5 first:mt-0 last:mb-0 leading-relaxed">{children}</p>,
   strong: ({ children }) => <strong className="font-semibold text-foreground">{children}</strong>,
   ul: ({ children }) => <ul className="my-2 list-disc space-y-1 pl-4">{children}</ul>,
@@ -32,6 +33,7 @@ interface SuggestionBuildProgressCardProps {
   readonly isLoading: boolean;
   readonly hasError: boolean;
   readonly onRetry?: () => void;
+  readonly showSummary?: boolean;
 }
 
 export type BuildCompletionStatus = "building" | "error" | "awaiting_input" | "on_canvas" | "incomplete";
@@ -49,10 +51,11 @@ export function resolveBuildCompletionStatus(
   const allStepsComplete =
     buildSteps.length === 0 || buildSteps.every((call) => call.status === "done" || call.status === "approved");
 
-  if (!allStepsComplete) return "building";
+  if (buildSteps.some((call) => call.status === "error")) return "error";
+  if (!allStepsComplete) return "incomplete";
 
   if (detectBuildAwaitingUserInput(assistantText)) return "awaiting_input";
-  if (buildSteps.length > 0) return "on_canvas";
+  if (buildSteps.some((call) => call.name !== "automation_start_flow")) return "on_canvas";
   return "incomplete";
 }
 
@@ -60,12 +63,13 @@ export function resolveBuildCompletionStatus(
 export function resolveBuildHeaderLabel(status: BuildCompletionStatus): string {
   switch (status) {
     case "on_canvas":
-      return "Built on canvas";
+      return "Draft updated";
     case "error":
       return "Build failed";
     case "incomplete":
       return "Build incomplete";
     case "awaiting_input":
+      return "Waiting for your answer";
     case "building":
     default:
       return "Building on canvas";
@@ -80,35 +84,21 @@ export function SuggestionBuildProgressCard({
   isLoading,
   hasError,
   onRetry,
+  showSummary = true,
 }: SuggestionBuildProgressCardProps): React.ReactElement {
   const buildSteps = filterBuildToolCalls(toolCalls);
-  const expectedStepCount = estimateExpectedBuildSteps(suggestion);
-  const completionStatus = resolveBuildCompletionStatus(buildSteps, isLoading, hasError, assistantText);
+  const questionReady = toolCalls.some((call) => call.name === "ask_user" && call.status === "done");
+  const completionStatus = questionReady
+    ? "awaiting_input"
+    : resolveBuildCompletionStatus(buildSteps, isLoading, hasError, assistantText);
   const awaitingUserInput = completionStatus === "awaiting_input";
-  const rawProgressPercent = computeBuildProgressPercent(buildSteps, isLoading, expectedStepCount, awaitingUserInput);
-  const monotonicProgressRef = useRef(0);
-  const buildSessionKeyRef = useRef(`${suggestion.rank}-${suggestion.title}`);
-
-  const buildSessionKey = `${suggestion.rank}-${suggestion.title}`;
-  if (buildSessionKeyRef.current !== buildSessionKey) {
-    buildSessionKeyRef.current = buildSessionKey;
-    monotonicProgressRef.current = 0;
-  }
-
-  if (isLoading) {
-    monotonicProgressRef.current = Math.max(monotonicProgressRef.current, rawProgressPercent);
-  } else if (rawProgressPercent >= 100) {
-    monotonicProgressRef.current = 100;
-  }
-
-  const progressPercent = isLoading ? monotonicProgressRef.current : rawProgressPercent;
   const statusText = resolveBuildStatusText(
     buildSteps,
     isLoading,
     hasError,
-    progressPercent,
+    undefined,
     awaitingUserInput,
-    expectedStepCount,
+    buildSteps.length,
     completionStatus,
   );
   const headerLabel = resolveBuildHeaderLabel(completionStatus);
@@ -145,9 +135,6 @@ export function SuggestionBuildProgressCard({
         >
           {statusText}
         </p>
-        {(isLoading || buildSteps.length > 0 || completionStatus === "on_canvas") && (
-          <Progress value={progressPercent} className="h-1.5 bg-violet-100 [&>div]:bg-violet-600" />
-        )}
 
         {buildSteps.length > 0 && (
           <ul className="space-y-1 pt-1">
@@ -157,7 +144,7 @@ export function SuggestionBuildProgressCard({
           </ul>
         )}
 
-        {assistantText.trim().length > 0 && <BuildAssistantSummary text={assistantText} />}
+        {showSummary && assistantText.trim().length > 0 && <BuildAssistantSummary text={assistantText} />}
 
         {completionStatus === "incomplete" && onRetry && (
           <Button type="button" size="sm" variant="outline" className="mt-1 h-8 gap-1.5" onClick={onRetry}>
@@ -224,7 +211,11 @@ function BuildAssistantSummary({ text }: { text: string }): React.ReactElement {
   return (
     <div className="rounded-lg bg-muted/50 px-3 py-2 text-sm text-foreground">
       <div className="prose prose-sm max-w-none dark:prose-invert">
-        <ReactMarkdown remarkPlugins={[remarkGfm]} components={ASSISTANT_MARKDOWN_COMPONENTS}>
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          components={ASSISTANT_MARKDOWN_COMPONENTS}
+          urlTransform={ASSISTANT_PROSE_MARKDOWN_GATE.urlTransform}
+        >
           {shownText}
         </ReactMarkdown>
       </div>
@@ -335,9 +326,9 @@ export function resolveBuildStatusText(
   buildSteps: readonly AssistantToolCall[],
   isLoading: boolean,
   hasError: boolean,
-  progressPercent?: number,
+  _progressPercent?: number,
   awaitingUserInput = false,
-  expectedStepCount = Math.max(buildSteps.length, 3),
+  _expectedStepCount = Math.max(buildSteps.length, 3),
   completionStatus?: BuildCompletionStatus,
 ): string {
   if (hasError) {
@@ -345,7 +336,7 @@ export function resolveBuildStatusText(
   }
 
   if (completionStatus === "incomplete") {
-    return "The assistant finished without adding canvas steps (we retried automatically). Use Retry build or ask it to call automation_start_flow.";
+    return "The draft is incomplete. Review the current steps, then retry or describe what is missing.";
   }
 
   if (awaitingUserInput) {
@@ -356,15 +347,11 @@ export function resolveBuildStatusText(
   const completedCount = buildSteps.filter((call) => call.status === "done" || call.status === "approved").length;
 
   if (isLoading && runningStep) {
-    return `${humanizeBuildToolName(runningStep.name)} (${completedCount}/${expectedStepCount})…`;
-  }
-
-  if (isLoading && progressPercent !== undefined && progressPercent >= 85) {
-    return "Almost done…";
+    return `${humanizeBuildToolName(runningStep.name)} · ${completedCount} changes completed…`;
   }
 
   if (isLoading && buildSteps.length > 0) {
-    return `Building on canvas (${completedCount}/${expectedStepCount})…`;
+    return `Building on canvas · ${completedCount} changes completed…`;
   }
 
   if (isLoading) {

@@ -3,6 +3,8 @@
  * Kept pure so the table can merge flow + comment rows without duplicating mapping logic.
  */
 
+import { COMMENT_ACTION_EVENTS } from "./comment-flow-mapper";
+
 export const COMMENT_AUTOMATION_SOURCE = "comment" as const;
 export const FLOW_AUTOMATION_SOURCE = "flow" as const;
 
@@ -10,15 +12,12 @@ export type AutomationTableSource = typeof COMMENT_AUTOMATION_SOURCE | typeof FL
 
 export const COMMENT_AUTOMATION_SERVICE = "comments";
 
-const COMMENT_ACTION_LABELS: Readonly<Record<string, string>> = {
-  hide: "Hide Comment",
-  delete: "Delete Comment",
-  reply: "Reply to Comment",
-};
+/** Reuses the flow-mapper's event names so both surfaces label an action identically. */
+const COMMENT_ACTION_LABELS: Readonly<Record<string, string>> = COMMENT_ACTION_EVENTS;
 
 const COMMENT_TRIGGER_LABELS: Readonly<Record<string, string>> = {
   realtime: "New Comment",
-  scheduled: "Scheduled",
+  scheduled: "Scheduled scan",
   manual: "Manual Run",
 };
 
@@ -27,10 +26,15 @@ export interface CommentAutomationApiRule {
   readonly name: string;
   readonly status: string;
   readonly triggerType?: string;
+  readonly frequency?: string | null;
+  readonly scheduledTime?: string | null;
   readonly actionType?: string;
   readonly userId?: string;
   readonly adAccountId?: string | null;
+  readonly accountName?: string | null;
   readonly pageId?: string | null;
+  /** Shared by every per-page rule of one automation. Null on pre-grouping rows. */
+  readonly groupId?: string | null;
   readonly processedCount?: number;
   readonly lastRunAt?: string | null;
   readonly updatedAt?: string;
@@ -46,6 +50,8 @@ export interface CommentAutomationTableRow {
   readonly rowKey: string;
   readonly source: typeof COMMENT_AUTOMATION_SOURCE;
   readonly id: number;
+  /** Shared by every per-page rule of one automation. Null on pre-grouping rows. */
+  readonly groupId: string | null;
   readonly name: string;
   readonly steps: AutomationTableStep[];
   readonly lastModified: Date;
@@ -59,6 +65,8 @@ export interface CommentAutomationTableRow {
   readonly runCount: number;
   readonly favourite: boolean;
   readonly rateLimited: boolean;
+  /** Always false: comment rules fire on incoming comments, never on a cadence. */
+  readonly manualOnly: boolean;
   readonly pageId?: string;
 }
 
@@ -99,6 +107,7 @@ export function mapCommentAutomationToTableRow(rule: CommentAutomationApiRule): 
     rowKey: buildAutomationRowKey(COMMENT_AUTOMATION_SOURCE, rule.id),
     source: COMMENT_AUTOMATION_SOURCE,
     id: rule.id,
+    groupId: rule.groupId ?? null,
     name: rule.name,
     steps: buildCommentSteps(rule),
     lastModified: updatedAt ? new Date(updatedAt) : new Date(),
@@ -108,12 +117,28 @@ export function mapCommentAutomationToTableRow(rule: CommentAutomationApiRule): 
     userInitials: userEmail.slice(0, 2).toUpperCase() || "U",
     nodes: [],
     accountId: rule.adAccountId ?? undefined,
-    accountName: undefined,
+    accountName: rule.accountName ?? undefined,
     runCount: rule.processedCount ?? 0,
     favourite: false,
     rateLimited: false,
+    manualOnly: false,
     pageId: rule.pageId ?? undefined,
   };
+}
+
+/**
+ * Stamps DB-validated account names onto comment rules so the home list and
+ * table do not have to guess from the open workspace alone.
+ */
+export function attachLookedUpAccountNames(
+  rules: ReadonlyArray<CommentAutomationApiRule>,
+  names: Readonly<Record<string, string>>,
+): CommentAutomationApiRule[] {
+  return rules.map((rule) => {
+    const accountId = rule.adAccountId;
+    if (!accountId) return { ...rule, accountName: rule.accountName ?? null };
+    return { ...rule, accountName: names[accountId] ?? rule.accountName ?? null };
+  });
 }
 
 /**

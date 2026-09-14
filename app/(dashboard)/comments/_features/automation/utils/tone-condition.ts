@@ -70,6 +70,19 @@ export function clampScore(value: number): number {
   return Math.min(SCORE_MAX, Math.max(SCORE_MIN, Math.round(value)));
 }
 
+/**
+ * Which preset band a raw sentiment score falls into. Used to label an
+ * individual processed comment (e.g. in a live run feed) with the same bands
+ * the preset dropdowns and rule conditions use, so "negative" always means the
+ * same range everywhere it appears.
+ */
+export function scoreToToneSlot(score: number): Exclude<ToneSlot, "anything"> {
+  const clamped = clampScore(score);
+  if (clamped <= PRESET_NEGATIVE_MAX) return "negative";
+  if (clamped >= PRESET_POSITIVE_MIN) return "positive";
+  return "neutral";
+}
+
 /** A tone condition only filters anything when it is a score range or a non-"anything" preset. */
 export function isToneConditionActive(value: ToneConditionValue): boolean {
   return value.mode === "score" || value.preset !== "anything";
@@ -78,6 +91,32 @@ export function isToneConditionActive(value: ToneConditionValue): boolean {
 /** Label shown on the tone value dropdown trigger. */
 export function getToneValueLabel(value: ToneConditionValue): string {
   return value.mode === "score" ? "a score" : TONE_LABEL[value.preset];
+}
+
+/**
+ * Plain-language definition of what a tone preset actually matches, in terms of
+ * the persisted 0–100 sentiment score. Shown next to the preset dropdowns so
+ * "positive" is a defined range rather than a vibe (ADM-10709).
+ */
+export const TONE_PRESET_DESCRIPTION: Record<ToneSlot, string> = {
+  anything: "No sentiment filter — comments match regardless of tone.",
+  positive: `Positive = sentiment score ${PRESET_POSITIVE_MIN}–${SCORE_MAX} (0 = very negative, ${SCORE_MAX} = very positive).`,
+  neutral: `Neutral = sentiment score ${PRESET_NEUTRAL_MIN}–${PRESET_NEUTRAL_MAX} (0 = very negative, ${SCORE_MAX} = very positive).`,
+  negative: `Negative = sentiment score ${SCORE_MIN}–${PRESET_NEGATIVE_MAX} (0 = very negative, ${SCORE_MAX} = very positive).`,
+};
+
+/** Definition line for the currently selected tone value (presets and raw score ranges). */
+export function getToneValueDescription(value: ToneConditionValue): string {
+  if (value.mode === "preset") return TONE_PRESET_DESCRIPTION[value.preset];
+  if (value.operator === "gt") {
+    return `Matches comments with a sentiment score above ${clampScore(value.min)} (0 = very negative, ${SCORE_MAX} = very positive).`;
+  }
+  if (value.operator === "lt") {
+    return `Matches comments with a sentiment score below ${clampScore(value.max)} (0 = very negative, ${SCORE_MAX} = very positive).`;
+  }
+  const min = Math.min(clampScore(value.min), clampScore(value.max));
+  const max = Math.max(clampScore(value.min), clampScore(value.max));
+  return `Matches comments with a sentiment score between ${min} and ${max} (0 = very negative, ${SCORE_MAX} = very positive).`;
 }
 
 /** Seed value for a freshly chosen score operator. */

@@ -1,4 +1,5 @@
 import type { AutomationNode, AssistantStepInput } from "../contexts/automation-context";
+import { normalizeCheckDays } from "./polling-run-time";
 
 function reindexNodes(nodes: AutomationNode[]): AutomationNode[] {
   return nodes.map((node, index) => ({ ...node, position: index }));
@@ -14,7 +15,13 @@ export function mergeAssistantStepConfig(
   incoming: Record<string, unknown> | undefined,
 ): Record<string, unknown> | undefined {
   if (!incoming) return existing;
-  if (!existing) return incoming;
+  if (!existing) {
+    const merged: Record<string, unknown> = { ...incoming };
+    if ("checkDays" in merged) {
+      merged.checkDays = [...normalizeCheckDays(merged.checkDays)];
+    }
+    return merged;
+  }
 
   const merged: Record<string, unknown> = { ...existing, ...incoming };
   if (isRecord(existing.criteria) && isRecord(incoming.criteria)) {
@@ -29,6 +36,9 @@ export function mergeAssistantStepConfig(
           ? { conditions: existingCriteria.conditions }
           : {}),
     };
+  }
+  if ("checkDays" in merged) {
+    merged.checkDays = [...normalizeCheckDays(merged.checkDays)];
   }
   return merged;
 }
@@ -89,7 +99,7 @@ export function upsertAssistantNodeInFlow(
     type: step.type ?? "action",
     service: step.service,
     event: step.event,
-    config: step.config,
+    config: mergeAssistantStepConfig(undefined, step.config),
     position: nodes.length,
   };
   const insertAt = resolveInsertIndex(nodes.length, step.position);

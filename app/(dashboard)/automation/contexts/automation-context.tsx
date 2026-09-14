@@ -1,21 +1,33 @@
 "use client";
 
+import { getAutomationSetupIssues } from "@/lib/automation/setup-validation";
+
 import { createContext, useContext, useState, useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
 import { normalizeLaunchAdTargetConfig } from "../lib/normalize-launch-ad-target";
 import { sampleAutomations } from "../lib/sample-automations";
 import { AUTOMATION_TEMPLATES } from "../lib/automation-templates";
 import { appendTerminalLog } from "../lib/execution-log-state";
+import { buildCompletionLogsFromStepResults, resolveExecutionLogStatusForStep } from "../lib/execution-step-results";
 import { generateAutoName, isDefaultName } from "../lib/generate-auto-name";
 import { isAutomationEditorIdentityReady, resolveExistingAutomationRuleId } from "@/lib/automation/editor-identity";
 import {
   buildCommentAutomationId,
   buildCommentSavePayloadFromFlow,
+  findCommentActionNode,
+  findCommentTriggerNode,
   isCommentAutomationFlow,
   mapCommentRuleToFlowNodes,
   parseCommentAutomationId,
+  readCommentPageIdsFromFlow,
+  readCommentPageNamesFromFlow,
   toCreateRuleParams,
-  toUpdateRuleParams,
+  toSyncGroupParams,
 } from "../lib/comment-flow-mapper";
+import { runCommentAutomationFlow, type CommentRunLogEvent } from "../lib/run-comment-automation";
+import { buildRehydratedCommentRunLogs } from "../_features/comment-automation/lib/comment-run-rehydrate";
+import { buildCommentSubscriptionErrorMessage } from "../lib/comment-subscription-failure";
+import { automationApi } from "@/app/(dashboard)/comments/lib/api/automation";
+import { getFacebookToken } from "@/app/(dashboard)/comments/actions/getFacebookToken";
 import { useUser } from "@/lib/providers/user-provider";
 import { createAxonCampaignViaApi } from "../lib/create-axon-campaign-via-api";
 import { resolveAxonNewCampaignsForSave, type ResolveAxonNewCampaignsResult } from "../lib/resolve-axon-new-campaigns";
@@ -24,8 +36,15 @@ import {
   isMetaAutomationAccountId,
   warmAutomationSuggestInsightsCache,
 } from "@/lib/automation/warm-suggest-insights-cache";
+import { type AutomationNodeType, getFlowControlStepDefaults } from "@/lib/automation/flow-control-steps";
+import { stripInapplicableScheduleFields } from "@/lib/automation/schedule-field-scope";
+import {
+  resolveAutomationBuilderAccount,
+  isSelectableAutomationBuilderAccount,
+} from "../lib/automation-ad-account-options";
+import { getAutomationSaveSetupWarning } from "../lib/save-setup-warning";
 
-export type NodeType = "trigger" | "action" | "filter" | "delay" | "approval";
+export type NodeType = AutomationNodeType;
 
 export interface AutomationNode {
   id: string;
@@ -102,6 +121,7 @@ function resolveAutomationActionType(event: string | undefined): string {
   if (event === "Launch Campaign") return "launch-campaign";
   if (event === "Pause Campaign") return "pause-campaign";
   if (event === "Launch Ad") return "launch-ad";
+  if (event === "Update Value Rules") return "update-value-rules";
   return "unknown";
 }
 
@@ -125,6 +145,14 @@ const HUNCH_SHARED_CONFIG_KEYS = [
   "manualLocation",
   "manualCountry",
   "manualRadius",
+  // ADM-10565: ad set schedule, configured once on the Duplicate Ad Set node and
+  // shared with the template-launch node that actually creates the row's ad set.
+  "scheduleSource",
+  "scheduleDateFormat",
+  "startDateColumn",
+  "endDateColumn",
+  "manualStartDate",
+  "manualEndDate",
   "leadFormId",
   "pageId",
   "facebookPageId",
@@ -144,6 +172,8 @@ const HUNCH_SHARED_CONFIG_KEYS = [
 
 interface AutomationContextType {
   flow: AutomationFlow;
+  draftEditVersion: number;
+  restoreAssistantDraft: (snapshot: AutomationFlow) => void;
   editorIdentity: AutomationEditorIdentity;
   updateFlowName: (name: string) => void;
   setFlowActive: (isActive: boolean) => void;
@@ -168,13 +198,31 @@ interface AutomationContextType {
    */
   invalidNodeId: string | null;
   saveAutomation: (options: SaveAutomationOptions) => Promise<SaveAutomationResult>;
-  runAutomation: () => Promise<void>;
+  /**
+   * Runs the automation. `ruleIds` narrows a comment automation's fan-out to
+   * the pages the user picked; omitted runs every page, as Run always has.
+   */
+  runAutomation: (options?: RunAutomationOptions) => Promise<void>;
   cancelExecution: () => void;
   executionLog: ExecutionLog[];
   isExecuting: boolean;
   loadAutomation: (id: string) => void;
   lastExecutionId: number | null;
   fetchLastExecution: () => Promise<void>;
+  /**
+   * Rehydrates the Execution Results panel from a comment automation's most
+   * recent CommentsServer run — the counterpart to `fetchLastExecution` for
+   * the automation types whose executions never land in `AutomationExecution`.
+   */
+  fetchLastCommentRun: () => Promise<void>;
+  /**
+   * Whether the execution results sheet is open. Shared here (rather than
+   * local state in AutomationHeader, which owns the `<ExecutionPanel>`
+   * instance) so any Run Now trigger — the header's button or the config
+   * panel's per-step footer button — can surface results the same way.
+   */
+  showExecutionPanel: boolean;
+  setShowExecutionPanel: (open: boolean) => void;
 }
 
 export type AutomationEditorOrigin = "persisted" | "new" | "template" | "import";
@@ -195,8 +243,30 @@ export interface SaveAutomationOptions {
 }
 
 export type SaveAutomationResult =
-  | { ok: true; name: string; ruleId: number | null }
+  | {
+      ok: true;
+      name: string;
+      ruleId: number | null;
+      /** Comment automations only: every per-page rule the save covered. */
+      memberRuleIds?: readonly number[];
+      warning?: string;
+    }
   | { ok: false; error: string; nodeId?: string };
+
+/** Rule ids CommentsServer returned for a comment automation save (one per page). */
+function readSavedMemberRuleIds(result: unknown): number[] {
+  const rules = (result as { rules?: unknown } | null)?.rules;
+  if (!Array.isArray(rules)) return [];
+  return rules
+    .map((rule) => Number((rule as { id?: unknown } | null)?.id))
+    .filter((id) => Number.isSafeInteger(id) && id > 0);
+}
+
+/** Options for one manual run. */
+export interface RunAutomationOptions {
+  /** Comment automations only: the per-page rules to run, instead of all of them. */
+  readonly ruleIds?: readonly number[];
+}
 
 export interface ExecutionLog {
   id: string;
@@ -219,8 +289,9 @@ export function AutomationProvider({
   automationId?: number | string | null;
   onAutomationIdChange?: (id: number | string | null) => void;
 }) {
-  const { extendedUser } = useUser();
+  const { extendedUser, currentWorkspace } = useUser();
 
+  const [draftEditVersion, setDraftEditVersion] = useState(0);
   const [flow, setFlow] = useState<AutomationFlow>({
     id: "flow-1",
     name: "Untitled Zap",
@@ -245,6 +316,7 @@ export function AutomationProvider({
   const [flowOrigin, setFlowOrigin] = useState<AutomationEditorOrigin>("new");
   const [flowLoadError, setFlowLoadError] = useState<string | null>(null);
   const [lastExecutionId, setLastExecutionId] = useState<number | null>(null);
+  const [showExecutionPanel, setShowExecutionPanel] = useState(false);
   const [assistantActiveStepId, setAssistantActiveStepId] = useState<string | null>(null);
   const [invalidNodeId, setInvalidNodeId] = useState<string | null>(null);
   const executionAbortRef = useRef<AbortController | null>(null);
@@ -252,51 +324,40 @@ export function AutomationProvider({
   // Derive default account from UserProvider context (no extra fetch)
   const getDefaultAccount = useCallback(() => {
     if (!extendedUser) return null;
-    const { defaultAccountId, defaultWorkspaceId, settings } = extendedUser;
-
-    if (defaultAccountId && defaultWorkspaceId) {
-      const relevantSettings = settings?.filter((s: any) => s.workspaceId === defaultWorkspaceId) || [];
-      const matchingSetting = relevantSettings.find((s: any) => s.businessId === defaultAccountId);
-      const accountName = matchingSetting?.businessName || defaultAccountId;
-      return { accountId: defaultAccountId, accountName };
-    }
-
-    // Fallback to first available non-Google Ads account
-    if (settings?.length > 0 && defaultWorkspaceId) {
-      const relevantSettings = (settings || []).filter(
-        (s: any) => s.workspaceId === defaultWorkspaceId && s.type !== "google_ads",
-      );
-      if (relevantSettings.length > 0) {
-        const firstAccount = relevantSettings[0];
-        return {
-          accountId: firstAccount.businessId,
-          accountName: firstAccount.businessName || firstAccount.businessId,
-        };
-      }
-    }
-    return null;
-  }, [extendedUser]);
+    return resolveAutomationBuilderAccount({
+      workspaceId: currentWorkspace?.id ?? extendedUser.defaultWorkspaceId,
+      defaultAccountId: extendedUser.defaultAccountId,
+      settings: extendedUser.settings ?? [],
+      workspaceAccounts: currentWorkspace?.adAccounts ?? [],
+    });
+  }, [currentWorkspace, extendedUser]);
 
   // Track which automationId we last initialized to avoid re-running on extendedUser changes
   // but still re-initialize when automationId actually changes (client-side navigation)
   const lastLoadedAutomationIdRef = useRef<string | number | null | undefined>(undefined);
 
   // When "new"/template initialized before extendedUser was ready, lastLoaded skips re-init.
-  // Backfill the default Meta account so the assistant seed does not race an empty selection.
+  // Backfill a picker-valid account so the assistant seed does not send a stale id.
   useEffect(() => {
-    if (flow.selectedAccountId) return;
     if (flowOrigin !== "new" && flowOrigin !== "template") return;
     const defaultAccount = getDefaultAccount();
     if (!defaultAccount?.accountId) return;
+    const workspaceId = currentWorkspace?.id ?? extendedUser?.defaultWorkspaceId;
+    const accountScope = {
+      workspaceId,
+      settings: extendedUser?.settings ?? [],
+      workspaceAccounts: currentWorkspace?.adAccounts ?? [],
+    };
     setFlow((prev) => {
-      if (prev.selectedAccountId) return prev;
+      if (prev.selectedAccountId === defaultAccount.accountId) return prev;
+      if (isSelectableAutomationBuilderAccount(prev.selectedAccountId, accountScope)) return prev;
       return {
         ...prev,
         selectedAccountId: defaultAccount.accountId,
         selectedAccountName: defaultAccount.accountName,
       };
     });
-  }, [flow.selectedAccountId, flowOrigin, getDefaultAccount]);
+  }, [flow.selectedAccountId, flowOrigin, getDefaultAccount, currentWorkspace, extendedUser]);
 
   // Warm the 1-day Redis cache for suggest-mode account insights when a Meta account
   // is available (builder selection or default account on table/home).
@@ -404,48 +465,63 @@ export function AutomationProvider({
           console.log("[v0] Fetching comment automation from API:", commentRuleId);
           fetch(`/api/comment-automation-rules?id=${commentRuleId}`, { signal: abortController.signal })
             .then((res) => res.json())
-            .then((data: { rule?: Record<string, unknown> | null; error?: string }) => {
-              if (abortController.signal.aborted) return;
-              const rule = data.rule;
-              if (!rule || typeof rule.id !== "number") {
-                setFlowLoadError(data.error || "Comment automation could not be found.");
+            .then(
+              (data: {
+                rule?: Record<string, unknown> | null;
+                groupId?: string | null;
+                pageIds?: string[];
+                pagePlatforms?: Record<string, "facebook" | "instagram">;
+                pageNames?: Record<string, string>;
+                error?: string;
+              }) => {
+                if (abortController.signal.aborted) return;
+                const rule = data.rule;
+                if (!rule || typeof rule.id !== "number") {
+                  setFlowLoadError(data.error || "Comment automation could not be found.");
+                  lastLoadedAutomationIdRef.current = requestedAutomationId;
+                  setIsLoadingFlow(false);
+                  return;
+                }
+
+                const nodes = mapCommentRuleToFlowNodes({
+                  id: rule.id,
+                  name: typeof rule.name === "string" ? rule.name : "Comment Automation",
+                  status: typeof rule.status === "string" ? rule.status : undefined,
+                  platform: rule.platform === "instagram" ? "instagram" : "facebook",
+                  triggerType: typeof rule.triggerType === "string" ? rule.triggerType : "realtime",
+                  conditions:
+                    rule.conditions && typeof rule.conditions === "object" && !Array.isArray(rule.conditions)
+                      ? (rule.conditions as import("@/app/(dashboard)/comments/lib/api/automation").AutomationConditions)
+                      : {},
+                  actionType: typeof rule.actionType === "string" ? rule.actionType : "hide",
+                  actionConfig:
+                    rule.actionConfig && typeof rule.actionConfig === "object" && !Array.isArray(rule.actionConfig)
+                      ? (rule.actionConfig as import("@/app/(dashboard)/comments/lib/api/automation").AutomationActionConfig)
+                      : {},
+                  frequency: typeof rule.frequency === "string" ? rule.frequency : undefined,
+                  scheduledTime: typeof rule.scheduledTime === "string" ? rule.scheduledTime : undefined,
+                  adAccountId: typeof rule.adAccountId === "string" ? rule.adAccountId : null,
+                  pageId: typeof rule.pageId === "string" ? rule.pageId : null,
+                  // One automation is one rule per page; the route returns them all
+                  // so the builder shows every page instead of just the one opened.
+                  pageIds: data.pageIds,
+                  pagePlatforms: data.pagePlatforms,
+                  pageNames: data.pageNames,
+                  groupId: data.groupId ?? null,
+                });
+
+                setFlow({
+                  id: buildCommentAutomationId(rule.id),
+                  name: typeof rule.name === "string" ? rule.name : "Comment Automation",
+                  nodes: nodes.map((node, idx) => ({ ...node, position: idx })),
+                  isActive: rule.status === "active" || rule.status === "executing",
+                  selectedAccountId: typeof rule.adAccountId === "string" ? rule.adAccountId : undefined,
+                });
+                setFlowOrigin("persisted");
                 lastLoadedAutomationIdRef.current = requestedAutomationId;
                 setIsLoadingFlow(false);
-                return;
-              }
-
-              const nodes = mapCommentRuleToFlowNodes({
-                id: rule.id,
-                name: typeof rule.name === "string" ? rule.name : "Comment Automation",
-                status: typeof rule.status === "string" ? rule.status : undefined,
-                platform: rule.platform === "instagram" ? "instagram" : "facebook",
-                triggerType: typeof rule.triggerType === "string" ? rule.triggerType : "realtime",
-                conditions:
-                  rule.conditions && typeof rule.conditions === "object" && !Array.isArray(rule.conditions)
-                    ? (rule.conditions as import("@/app/(dashboard)/comments/lib/api/automation").AutomationConditions)
-                    : {},
-                actionType: typeof rule.actionType === "string" ? rule.actionType : "hide",
-                actionConfig:
-                  rule.actionConfig && typeof rule.actionConfig === "object" && !Array.isArray(rule.actionConfig)
-                    ? (rule.actionConfig as import("@/app/(dashboard)/comments/lib/api/automation").AutomationActionConfig)
-                    : {},
-                frequency: typeof rule.frequency === "string" ? rule.frequency : undefined,
-                scheduledTime: typeof rule.scheduledTime === "string" ? rule.scheduledTime : undefined,
-                adAccountId: typeof rule.adAccountId === "string" ? rule.adAccountId : null,
-                pageId: typeof rule.pageId === "string" ? rule.pageId : null,
-              });
-
-              setFlow({
-                id: buildCommentAutomationId(rule.id),
-                name: typeof rule.name === "string" ? rule.name : "Comment Automation",
-                nodes: nodes.map((node, idx) => ({ ...node, position: idx })),
-                isActive: rule.status === "active" || rule.status === "executing",
-                selectedAccountId: typeof rule.adAccountId === "string" ? rule.adAccountId : undefined,
-              });
-              setFlowOrigin("persisted");
-              lastLoadedAutomationIdRef.current = requestedAutomationId;
-              setIsLoadingFlow(false);
-            })
+              },
+            )
             .catch((err) => {
               if (err.name === "AbortError") return;
               console.error("[v0] Failed to fetch comment automation:", err);
@@ -506,6 +582,25 @@ export function AutomationProvider({
                 notificationSettings: rule.flow?.notificationSettings || undefined,
               });
               setFlowOrigin("persisted");
+
+              // Hydrate "View last run" from the automation's real history —
+              // lastExecutionId otherwise only reflects runs triggered in this
+              // browser tab, leaving the button disabled for automations that
+              // ran before this session (e.g. on a schedule, or last visit).
+              // Fire-and-forget: a failure just leaves the button disabled,
+              // same as before this hydration existed.
+              fetch(`/api/automation-rules?history=true&automationRuleId=${rule.id}&limit=1`, {
+                signal: abortController.signal,
+              })
+                .then((res) => res.json())
+                .then((historyData: { rules?: Array<{ id: number }> }) => {
+                  if (abortController.signal.aborted) return;
+                  setLastExecutionId(historyData.rules?.[0]?.id ?? null);
+                })
+                .catch((err) => {
+                  if (err.name === "AbortError") return;
+                  console.error("[v0] Failed to fetch last execution id:", err);
+                });
             } else {
               console.warn("[v0] Automation not found:", automationId);
               setFlowLoadError("Automation could not be found.");
@@ -524,7 +619,7 @@ export function AutomationProvider({
     } else if (automationId === "new") {
       console.log("[v0] Creating new automation");
       const defaultAccount = getDefaultAccount();
-      setFlow({
+      setFlow((prev) => ({
         id: `flow-${Date.now()}`,
         name: "Untitled Zap",
         nodes: [
@@ -540,9 +635,9 @@ export function AutomationProvider({
           },
         ],
         isActive: false,
-        selectedAccountId: defaultAccount?.accountId,
-        selectedAccountName: defaultAccount?.accountName,
-      });
+        selectedAccountId: prev.selectedAccountId ?? defaultAccount?.accountId,
+        selectedAccountName: prev.selectedAccountName ?? defaultAccount?.accountName,
+      }));
       setFlowOrigin("new");
       lastLoadedAutomationIdRef.current = requestedAutomationId;
       setIsLoadingFlow(false);
@@ -581,14 +676,17 @@ export function AutomationProvider({
   }, [automationId, flow.id, flowLoadError, flowOrigin, isLoadingFlow]);
 
   const updateFlowName = useCallback((name: string) => {
+    setDraftEditVersion((version) => version + 1);
     setFlow((prev) => ({ ...prev, name }));
   }, []);
 
   const setFlowActive = useCallback((isActive: boolean) => {
+    setDraftEditVersion((version) => version + 1);
     setFlow((prev) => ({ ...prev, isActive }));
   }, []);
 
   const setSelectedAccount = useCallback((accountId: string, accountName: string) => {
+    setDraftEditVersion((version) => version + 1);
     setFlow((prev) => ({
       ...prev,
       selectedAccountId: accountId,
@@ -597,24 +695,18 @@ export function AutomationProvider({
   }, []);
 
   const updateNotificationSettings = useCallback((settings: any) => {
+    setDraftEditVersion((version) => version + 1);
     setFlow((prev) => ({ ...prev, notificationSettings: settings }));
   }, []);
 
   const addNode = useCallback((type: NodeType, position: number) => {
+    setDraftEditVersion((version) => version + 1);
     const newNode: AutomationNode = {
       id: `node-${Date.now()}`,
       type,
       position,
-      // Auto-configure delay nodes with service and event
-      ...(type === "delay" && {
-        service: "delay",
-        event: "Wait for Duration",
-      }),
-      // Auto-configure approval nodes with service and event
-      ...(type === "approval" && {
-        service: "approval",
-        event: "Approval Required",
-      }),
+      // Delay/approval nodes are fully determined by their type, so skip the app picker.
+      ...getFlowControlStepDefaults(type),
     };
     setFlow((prev) => ({
       ...prev,
@@ -633,6 +725,7 @@ export function AutomationProvider({
 
   const updateNode = useCallback(
     (id: string, updates: Partial<AutomationNode>) => {
+      setDraftEditVersion((version) => version + 1);
       clearInvalidNodeIfMatches(id);
       setFlow((prev) => ({
         ...prev,
@@ -648,6 +741,7 @@ export function AutomationProvider({
 
   const deleteNode = useCallback(
     (id: string) => {
+      setDraftEditVersion((version) => version + 1);
       clearInvalidNodeIfMatches(id);
       setFlow((prev) => ({
         ...prev,
@@ -658,6 +752,7 @@ export function AutomationProvider({
   );
 
   const moveNode = useCallback((id: string, newPosition: number) => {
+    setDraftEditVersion((version) => version + 1);
     setFlow((prev) => ({
       ...prev,
       nodes: prev.nodes
@@ -734,6 +829,22 @@ export function AutomationProvider({
     [onAutomationIdChange],
   );
 
+  // Restoring never writes to the server. If a fresh draft replaced a saved rule,
+  // restore its content as a new draft rather than silently changing persistence identity.
+  const restoreAssistantDraft = useCallback(
+    (snapshot: AutomationFlow) => {
+      if (snapshot.id !== flow.id) {
+        applyAssistantFlow(snapshot);
+      } else {
+        setFlow(structuredClone(snapshot));
+      }
+      setAssistantActiveStepId(null);
+      setInvalidNodeId(null);
+      setDraftEditVersion((version) => version + 1);
+    },
+    [flow.id, applyAssistantFlow],
+  );
+
   const clearAssistantActiveStep = useCallback(() => setAssistantActiveStepId(null), []);
 
   // Insert a new node, or merge into an existing one by id, then reindex. Drives
@@ -766,10 +877,22 @@ export function AutomationProvider({
 
       // Comment automations persist to CommentsServer, not Prisma AutomationRule.
       if (isCommentAutomationFlow(flow.nodes)) {
+        // A rejected save can name the pages that blocked it; resolve those ids to
+        // the names shown in the trigger's picker so the toast is actionable.
+        const describeCommentSaveError = (body: unknown, fallback: string): string => {
+          const responseError = (body as { error?: unknown } | null)?.error;
+          return buildCommentSubscriptionErrorMessage({
+            body,
+            pageNames: readCommentPageNamesFromFlow(flow.nodes),
+            selectedPageCount: readCommentPageIdsFromFlow(flow.nodes).length,
+            fallback: typeof responseError === "string" && responseError ? responseError : fallback,
+          });
+        };
+
         const mapped = buildCommentSavePayloadFromFlow({
           name: nameToSave,
           nodes: flow.nodes,
-          selectedAccountId: flow.selectedAccountId,
+          requirePages: false,
         });
         if (!mapped.ok) {
           if (mapped.nodeId) setInvalidNodeId(mapped.nodeId);
@@ -784,21 +907,27 @@ export function AutomationProvider({
             const response = await fetch("/api/comment-automation-rules", {
               method: "PUT",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                id: existingId,
-                ...toUpdateRuleParams(mapped.value),
-              }),
+              // Always the group shape: with a group id the save covers every
+              // page, and without one the server adopts the automation's rules
+              // into a new group first. `id` is the rule the builder opened,
+              // which is what identifies the automation being adopted.
+              body: JSON.stringify({ id: existingId, ...toSyncGroupParams(mapped.value) }),
             });
             const result = await response.json();
             if (!response.ok) {
-              return { ok: false, error: result.error || "Failed to save comment automation" };
+              return { ok: false, error: describeCommentSaveError(result, "Failed to save comment automation") };
             }
 
             const savedId = buildCommentAutomationId(existingId);
             setFlow((previous) => ({ ...previous, id: savedId, name: nameToSave }));
             setFlowOrigin("persisted");
+            // The flow we just persisted is already the freshest state — mark this id
+            // "loaded" so the automationId-change effect below doesn't turn around and
+            // refetch it from the server, which would flash a loading state and reset
+            // execution/log state right after the user clicked Save.
+            lastLoadedAutomationIdRef.current = savedId;
             onAutomationIdChange?.(savedId);
-            return { ok: true, name: nameToSave, ruleId: existingId };
+            return { ok: true, name: nameToSave, ruleId: existingId, memberRuleIds: readSavedMemberRuleIds(result) };
           }
 
           const createParams = toCreateRuleParams(mapped.value, {
@@ -813,7 +942,7 @@ export function AutomationProvider({
           });
           const result = await response.json();
           if (!response.ok) {
-            return { ok: false, error: result.error || "Failed to create comment automation" };
+            return { ok: false, error: describeCommentSaveError(result, "Failed to create comment automation") };
           }
 
           const returnedRuleId = Number(result.rule?.id ?? result.rules?.[0]?.id);
@@ -824,15 +953,26 @@ export function AutomationProvider({
           const savedId = buildCommentAutomationId(returnedRuleId);
           setFlow((previous) => ({ ...previous, id: savedId, name: nameToSave }));
           setFlowOrigin("persisted");
+          // Same reasoning as the update branch above: avoid an immediate,
+          // redundant refetch of the automation we just created.
+          lastLoadedAutomationIdRef.current = savedId;
           onAutomationIdChange?.(savedId);
-          return { ok: true, name: nameToSave, ruleId: returnedRuleId };
+          return {
+            ok: true,
+            name: nameToSave,
+            ruleId: returnedRuleId,
+            memberRuleIds: readSavedMemberRuleIds(result),
+          };
         } catch {
           return { ok: false, error: "An error occurred while saving the comment automation" };
         }
       }
 
+      const setupIssues = getAutomationSetupIssues(flow.nodes, flow.selectedAccountId);
+      if (setupIssues.length) return { ok: false, error: setupIssues.map((issue) => issue.message).join("\n") };
+
       // Create any pending "new AppLovin campaign" up-front so the saved flow carries a
-      // resolved campaignId; creation errors surface via the normal toast.
+      // resolved campaignId (ADM-9094); creation errors surface via the normal toast.
       const campaignResolution = await resolveAxonNewCampaignsForSave(flow.nodes, {
         company: extendedUser?.company ?? "",
         workspaceId: extendedUser?.defaultWorkspaceId ?? "",
@@ -854,9 +994,15 @@ export function AutomationProvider({
 
       const existingId = mode === "update" ? editorIdentity.existingRuleId : null;
       const isExisting = existingId !== null;
-      const scheduledTriggerNode = nodesToSave.find((node) => node.type === "trigger" && node.service === "scheduled");
-      const anyTriggerNode = nodesToSave.find((node) => node.type === "trigger");
-      const actionNode = nodesToSave.find((node) => node.type === "action");
+      // Derive the payload from the SAME normalized nodes that get persisted, so
+      // the rule columns and the stored flow can never disagree (ADM-11225).
+      const normalizedNodes = normalizeAutomationNodesForSave(nodesToSave);
+      const saveSetupWarning = getAutomationSaveSetupWarning(normalizedNodes, flow.selectedAccountId);
+      const scheduledTriggerNode = normalizedNodes.find(
+        (node) => node.type === "trigger" && node.service === "scheduled",
+      );
+      const anyTriggerNode = normalizedNodes.find((node) => node.type === "trigger");
+      const actionNode = normalizedNodes.find((node) => node.type === "action");
       const scheduledConfig = scheduledTriggerNode?.config || {};
       const triggerConfig = anyTriggerNode?.config || {};
       const effectiveFrequency =
@@ -869,7 +1015,7 @@ export function AutomationProvider({
         ...(isExisting ? { id: existingId } : {}),
         name: flowNameToSave,
         flow: {
-          nodes: normalizeAutomationNodesForSave(nodesToSave),
+          nodes: normalizedNodes,
           notificationSettings: flow.notificationSettings || undefined,
         },
         actionType: resolveAutomationActionType(actionNode?.event),
@@ -909,10 +1055,19 @@ export function AutomationProvider({
 
         if (savedRuleId !== null) {
           setFlowOrigin("persisted");
+          // Same reasoning as the comment-automation branches above: the flow we
+          // just persisted is already current, so mark it "loaded" before telling
+          // the parent about the new id to skip a redundant refetch/state reset.
+          lastLoadedAutomationIdRef.current = savedRuleId;
           onAutomationIdChange?.(savedRuleId);
         }
 
-        return { ok: true, name: flowNameToSave, ruleId: savedRuleId };
+        return {
+          ok: true,
+          name: flowNameToSave,
+          ruleId: savedRuleId,
+          ...(saveSetupWarning ? { warning: saveSetupWarning } : {}),
+        };
       } catch {
         return { ok: false, error: "An error occurred while saving" };
       }
@@ -920,343 +1075,484 @@ export function AutomationProvider({
     [editorIdentity, extendedUser, flow, onAutomationIdChange],
   );
 
-  const runAutomation = useCallback(async () => {
-    if (!editorIdentity.canMutate) return;
-
-    if (isCommentAutomationFlow(flow.nodes)) {
-      setExecutionLog([
-        {
-          id: `log-${Date.now()}-comment-info`,
-          nodeId: "system",
-          status: "skipped",
-          message:
-            "Comment automations run from Comments (realtime/scheduled/manual). Save the rule, then manage runs in Comments.",
-          timestamp: new Date(),
-        },
-      ]);
-      return;
-    }
-
-    const abortController = new AbortController();
-    executionAbortRef.current = abortController;
-
-    setIsExecuting(true);
-    setExecutionLog([]);
-    console.log("[v0] Starting automation execution (SSE)");
-
-    try {
-      // Create any pending "new AppLovin campaign" before executing so the run targets a
-      // real campaignId, mirroring save.
-      const campaignResolution = await resolveAxonNewCampaignsForSave(flow.nodes, {
-        company: extendedUser?.company ?? "",
-        workspaceId: extendedUser?.defaultWorkspaceId ?? "",
-        createCampaign: createAxonCampaignViaApi,
-        now: new Date(),
-      }).catch(
-        (error): ResolveAxonNewCampaignsResult => ({
-          ok: false,
-          error: error instanceof Error ? error.message : "Failed to create the AppLovin campaign.",
-        }),
-      );
-      if (!campaignResolution.ok) {
+  // Comment automations execute on CommentsServer, not the Prisma automation
+  // executor: save the rule there, start a manual run, and poll run status so
+  // the panel shows real per-step progress (previously Run showed only a
+  // "manage runs in Comments" note that the panel never rendered).
+  const runCommentAutomation = useCallback(
+    async (onlyRuleIds?: readonly number[]) => {
+      const mapped = buildCommentSavePayloadFromFlow({
+        name: flow.name,
+        nodes: flow.nodes,
+        requirePages: true,
+      });
+      if (!mapped.ok) {
+        if (mapped.nodeId) setInvalidNodeId(mapped.nodeId);
         setExecutionLog([
           {
-            id: `log-${Date.now()}-campaign-error`,
-            nodeId: "system",
+            id: `log-${Date.now()}-comment-invalid`,
+            nodeId: mapped.nodeId ?? "system",
             status: "error",
-            message: campaignResolution.error,
+            message: mapped.error,
             timestamp: new Date(),
+            // Flags a pre-flight rejection rather than a run that failed partway.
+            // Nothing executed here, so the panel says "can't run yet" and points
+            // at the step to fix instead of reporting a failed step.
+            data: { validation: true },
           },
         ]);
-        setIsExecuting(false);
         return;
       }
-      if (campaignResolution.changed) {
-        setFlow((previous) => ({ ...previous, nodes: campaignResolution.nodes }));
+
+      const triggerNode = flow.nodes.find((node) => node.type === "trigger");
+      const actionNode = flow.nodes.find((node) => node.type === "action");
+      const existingRuleId = editorIdentity.existingRuleId;
+
+      const abortController = new AbortController();
+      executionAbortRef.current = abortController;
+      setIsExecuting(true);
+      setExecutionLog([]);
+
+      const appendCommentLog = (event: CommentRunLogEvent): void => {
+        setExecutionLog((prev) => {
+          const entry: ExecutionLog = {
+            id: `log-${Date.now()}-${event.nodeId}-${event.status}`,
+            nodeId: event.nodeId,
+            status: event.status,
+            message: event.message,
+            timestamp: new Date(),
+            // Feeds the Execution Results panel's live comment feed (see
+            // findLatestProcessedComments). Omitted when the event carries no
+            // comments so the panel keeps showing its last known snapshot.
+            data: event.comments ? { comments: event.comments } : undefined,
+          };
+          // Terminal failures drop every running entry so the derived spinner stops.
+          if (event.status === "error" || event.status === "cancelled") {
+            return appendTerminalLog(prev, entry);
+          }
+          return [...prev.filter((log) => !(log.nodeId === event.nodeId && log.status === "running")), entry];
+        });
+      };
+
+      try {
+        const result = await runCommentAutomationFlow({
+          // Set when the user picked pages from the Run menu; omitted runs them all.
+          onlyRuleIds,
+          triggerNodeId: triggerNode?.id ?? "system",
+          actionNodeId: actionNode?.id ?? "system",
+          hasExistingRule: existingRuleId !== null,
+          processExistingOnCreate: mapped.value.processExisting === true,
+          saveRule: async () => {
+            const saved = await saveAutomation({ mode: existingRuleId !== null ? "update" : "create" });
+            return saved.ok
+              ? { ok: true, ruleId: saved.ruleId, memberRuleIds: saved.memberRuleIds }
+              : { ok: false, error: saved.error };
+          },
+          getAccessToken: getFacebookToken,
+          startExecution: (ruleId, accessToken, runGroupId) =>
+            automationApi.executeRule(ruleId, {
+              adAccountId: mapped.value.adAccountId,
+              pageId: mapped.value.pageIds[0],
+              encryptedUserToken: accessToken,
+              runGroupId,
+            }),
+          fetchLatestRun: async (ruleId) => {
+            const response = await automationApi.getRuleRuns(ruleId, 1, 0);
+            return response.runs[0] ?? null;
+          },
+          fetchRunComments: async (runId) => {
+            const response = await automationApi.getRunDetails(runId);
+            return response.comments;
+          },
+          requestCancel: (ruleId) => automationApi.cancelRuleExecution(ruleId),
+          onLog: appendCommentLog,
+          signal: abortController.signal,
+        });
+        if (
+          result.outcome === "completed" ||
+          result.outcome === "completed-with-failures" ||
+          result.outcome === "still-running"
+        ) {
+          setFlow((prev) => ({ ...prev, lastRun: new Date() }));
+        }
+      } catch (error) {
+        appendCommentLog({
+          nodeId: "system",
+          status: "error",
+          message: `Run failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+        });
+      } finally {
+        executionAbortRef.current = null;
+        setIsExecuting(false);
       }
-      const runNodes = campaignResolution.nodes;
+    },
+    [editorIdentity.existingRuleId, flow.name, flow.nodes, flow.selectedAccountId, saveAutomation],
+  );
 
-      const triggerNode = runNodes.find((n) => n.type === "trigger");
-      const actionNode = runNodes.find((n) => n.type === "action");
+  const runAutomation = useCallback(
+    async (options?: RunAutomationOptions) => {
+      if (!editorIdentity.canMutate) return;
 
-      const actionType = resolveAutomationActionType(actionNode?.event);
+      if (isCommentAutomationFlow(flow.nodes)) {
+        await runCommentAutomation(options?.ruleIds);
+        return;
+      }
 
-      // Show initial running status
-      const initialLog: ExecutionLog = {
-        id: `log-${Date.now()}-init`,
-        nodeId: "system",
-        status: "running",
-        message: "Starting automation...",
-        timestamp: new Date(),
-      };
-      setExecutionLog([initialLog]);
+      const abortController = new AbortController();
+      executionAbortRef.current = abortController;
 
-      const isMediaLibraryTrigger = triggerNode?.service === "media-library";
+      setIsExecuting(true);
+      setExecutionLog([]);
+      console.log("[v0] Starting automation execution (SSE)");
 
-      const executePayload = {
-        name: flow.name,
-        flow: { nodes: runNodes, notificationSettings: flow.notificationSettings || undefined },
-        actionType,
-        targetId: actionNode?.config?.targetId || null,
-        accountId: flow.selectedAccountId || actionNode?.config?.accountId || null,
-        newName: actionNode?.config?.newName || null,
-        ruleId: editorIdentity.existingRuleId,
-        dryRun: triggerNode?.config?.dryRun || false,
-        testWithLatestAsset: isMediaLibraryTrigger,
-      };
+      try {
+        const setupIssues = getAutomationSetupIssues(flow.nodes, flow.selectedAccountId);
+        if (setupIssues.length) throw new Error(setupIssues.map((issue) => issue.message).join("\n"));
 
-      // Try SSE streaming endpoint first
-      const response = await fetch("/api/automation-rules/execute/stream", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(executePayload),
-        signal: abortController.signal,
-      });
+        // Create any pending "new AppLovin campaign" before executing so the run targets a
+        // real campaignId, mirroring save (ADM-9094).
+        const campaignResolution = await resolveAxonNewCampaignsForSave(flow.nodes, {
+          company: extendedUser?.company ?? "",
+          workspaceId: extendedUser?.defaultWorkspaceId ?? "",
+          createCampaign: createAxonCampaignViaApi,
+          now: new Date(),
+        }).catch(
+          (error): ResolveAxonNewCampaignsResult => ({
+            ok: false,
+            error: error instanceof Error ? error.message : "Failed to create the AppLovin campaign.",
+          }),
+        );
+        if (!campaignResolution.ok) {
+          setExecutionLog([
+            {
+              id: `log-${Date.now()}-campaign-error`,
+              nodeId: "system",
+              status: "error",
+              message: campaignResolution.error,
+              timestamp: new Date(),
+            },
+          ]);
+          setIsExecuting(false);
+          return;
+        }
+        if (campaignResolution.changed) {
+          setFlow((previous) => ({ ...previous, nodes: campaignResolution.nodes }));
+        }
+        const runNodes = campaignResolution.nodes;
 
-      if (!response.ok || !response.body) {
-        // Fallback to standard endpoint
-        console.log("[v0] SSE failed, falling back to standard endpoint");
-        const fallbackResponse = await fetch("/api/automation-rules/execute", {
+        const triggerNode = runNodes.find((n) => n.type === "trigger");
+        const actionNode = runNodes.find((n) => n.type === "action");
+
+        const actionType = resolveAutomationActionType(actionNode?.event);
+
+        // Show initial running status
+        const initialLog: ExecutionLog = {
+          id: `log-${Date.now()}-init`,
+          nodeId: "system",
+          status: "running",
+          message: "Starting automation...",
+          timestamp: new Date(),
+        };
+        setExecutionLog([initialLog]);
+
+        const isMediaLibraryTrigger = triggerNode?.service === "media-library";
+
+        const executePayload = {
+          name: flow.name,
+          flow: { nodes: runNodes, notificationSettings: flow.notificationSettings || undefined },
+          actionType,
+          targetId: actionNode?.config?.targetId || null,
+          accountId: flow.selectedAccountId || actionNode?.config?.accountId || null,
+          newName: actionNode?.config?.newName || null,
+          ruleId: editorIdentity.existingRuleId,
+          dryRun: triggerNode?.config?.dryRun || false,
+          testWithLatestAsset: isMediaLibraryTrigger,
+        };
+
+        // Try SSE streaming endpoint first
+        const response = await fetch("/api/automation-rules/execute/stream", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(executePayload),
           signal: abortController.signal,
         });
-        const executeResult = await fallbackResponse.json();
-        // Handle result same as before
-        flow.nodes.forEach((node) => {
-          const isSuccess = executeResult.success;
-          setExecutionLog((prev) => [
-            ...prev.filter((log) => log.nodeId !== node.id),
-            {
-              id: `log-${Date.now()}-${node.id}-complete`,
-              nodeId: node.id,
-              status: isSuccess ? "success" : "error",
-              message: isSuccess
-                ? `Completed ${node.type}: ${node.service} - ${node.event}`
-                : `Failed: ${executeResult.error || "Unknown error"}`,
-              timestamp: new Date(),
-              data:
-                node.type === "action"
-                  ? {
-                      resultId: executeResult.resultId,
-                      logs: executeResult.logs,
-                      actionType: executeResult.actionType,
-                      accountId: executeResult.accountId,
-                      stepResults: executeResult.stepResults,
-                    }
-                  : undefined,
-            },
-          ]);
-        });
-        const historyLogEntry: ExecutionLog = {
-          id: `log-history-${Date.now()}`,
-          nodeId: "history",
-          status: executeResult.executionId ? "success" : "error",
-          message: executeResult.executionId ? "Saved to history" : "History save failed",
-          timestamp: new Date(),
-          data: {
-            historyId: executeResult.executionId,
+
+        if (!response.ok || !response.body) {
+          // Fallback to standard endpoint
+          console.log("[v0] SSE failed, falling back to standard endpoint");
+          const fallbackResponse = await fetch("/api/automation-rules/execute", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(executePayload),
+            signal: abortController.signal,
+          });
+          const executeResult = await fallbackResponse.json();
+          const completionTimestamp = new Date();
+          const sharedCompletionData = {
             resultId: executeResult.resultId,
-            actionType,
-            accountId: actionNode?.config?.accountId,
-          },
-        };
-        setExecutionLog((prev) => [...prev, historyLogEntry]);
-        // Store execution ID for later retrieval
-        if (executeResult.executionId) {
-          setLastExecutionId(executeResult.executionId);
+            logs: executeResult.logs,
+            actionType: executeResult.actionType,
+            accountId: executeResult.accountId,
+            stepResults: executeResult.stepResults,
+          };
+          const completionLogs = buildCompletionLogsFromStepResults({
+            nodes: flow.nodes,
+            stepResults: executeResult.stepResults,
+            runSuccess: executeResult.success,
+            sharedData: sharedCompletionData,
+            timestamp: completionTimestamp,
+          });
+          const historyLogEntry: ExecutionLog = {
+            id: `log-history-${Date.now()}`,
+            nodeId: "history",
+            status: executeResult.executionId ? "success" : "error",
+            message: executeResult.executionId ? "Saved to history" : "History save failed",
+            timestamp: completionTimestamp,
+            data: {
+              historyId: executeResult.executionId,
+              resultId: executeResult.resultId,
+              actionType,
+              accountId: actionNode?.config?.accountId,
+              stepResults: executeResult.stepResults,
+              logs: executeResult.logs,
+            },
+          };
+          setExecutionLog([...completionLogs, historyLogEntry]);
+          // Store execution ID for later retrieval
+          if (executeResult.executionId) {
+            setLastExecutionId(executeResult.executionId);
+          }
+          setFlow((prev) => ({ ...prev, lastRun: new Date() }));
+          return;
         }
-        setFlow((prev) => ({ ...prev, lastRun: new Date() }));
-        return;
-      }
 
-      // Read SSE stream
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
+        // Read SSE stream
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        // A clean EOF is not the same as a finished run. When the server is killed
+        // mid-execution (Vercel's `maxDuration = 300`) or a proxy reaps the
+        // connection, the stream just ends: no complete/cancelled/error event ever
+        // arrives. Track whether we saw a terminal event so the loop's exit can
+        // tell "the run ended" from "the run was cut off". See ADM-12378.
+        let sawTerminalEvent = false;
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
 
-        buffer += decoder.decode(value, { stream: true });
+          buffer += decoder.decode(value, { stream: true });
 
-        // Parse SSE events from buffer
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || ""; // Keep incomplete line in buffer
+          // Parse SSE events from buffer
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || ""; // Keep incomplete line in buffer
 
-        for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            try {
-              const event = JSON.parse(line.slice(6));
+          for (const line of lines) {
+            if (line.startsWith("data: ")) {
+              try {
+                const event = JSON.parse(line.slice(6));
 
-              if (event.type === "progress") {
-                // Update the latest progress message
-                setExecutionLog((prev) => {
-                  const progressEntry: ExecutionLog = {
-                    id: `log-progress-${Date.now()}`,
-                    nodeId: event.nodeId || "system",
-                    status: "running",
-                    message: event.message,
-                    timestamp: new Date(),
-                    data: event.data,
-                  };
-                  // Replace the last "running" entry or add new
-                  const withoutOldRunning = prev.filter((log) => log.status !== "running" || log.nodeId === "system");
-                  // Keep "system" running entry for the spinner, add new progress
-                  return [...withoutOldRunning, progressEntry];
-                });
-              } else if (event.type === "step_result") {
-                setExecutionLog((prev) => [
-                  ...prev,
-                  {
-                    id: `log-step-${Date.now()}`,
-                    nodeId: event.nodeId || "system",
-                    status: "success",
-                    message: event.message,
-                    timestamp: new Date(),
-                    data: event.data,
-                  },
-                ]);
-              } else if (event.type === "complete") {
-                const completeData = event.data || {};
-
-                // Media-library watch mode activation - no execution, just activation
-                if (completeData.activated) {
-                  setExecutionLog((prev) => [
-                    ...prev.filter((log) => log.status !== "running"),
-                    {
-                      id: `log-activated-${Date.now()}`,
-                      nodeId: "system",
-                      status: "success",
-                      message: completeData.message || "Automation activated - watching for new uploads",
+                if (event.type === "progress") {
+                  // Update the latest progress message
+                  setExecutionLog((prev) => {
+                    const progressEntry: ExecutionLog = {
+                      id: `log-progress-${Date.now()}`,
+                      nodeId: event.nodeId || "system",
+                      status: "running",
+                      message: event.message,
                       timestamp: new Date(),
-                      data: { description: completeData.description },
-                    },
-                  ]);
-                  setFlow((prev) => ({ ...prev, status: "active" }));
-                } else {
-                  // Add final completion logs with all data
-                  flow.nodes.forEach((node) => {
-                    setExecutionLog((prev) => [
-                      ...prev.filter((log) => (log.status === "running" ? false : true)),
-                      {
-                        id: `log-${Date.now()}-${node.id}-complete`,
-                        nodeId: node.id,
-                        status: completeData.success ? "success" : "error",
-                        message: completeData.success
-                          ? `Completed ${node.type}: ${node.service} - ${node.event}`
-                          : `Failed: ${event.message || "Unknown error"}`,
-                        timestamp: new Date(),
-                        data:
-                          node.type === "action"
-                            ? {
-                                resultId: completeData.resultId,
-                                logs: completeData.logs,
-                                actionType: completeData.actionType || actionType,
-                                accountId: completeData.accountId || actionNode?.config?.accountId,
-                                stepResults: completeData.stepResults,
-                              }
-                            : undefined,
-                      },
-                    ]);
+                      data: event.data,
+                    };
+                    // Replace the last "running" entry or add new
+                    const withoutOldRunning = prev.filter((log) => log.status !== "running" || log.nodeId === "system");
+                    // Keep "system" running entry for the spinner, add new progress
+                    return [...withoutOldRunning, progressEntry];
                   });
-                  // History log
+                } else if (event.type === "step_result") {
+                  const stepResult = event.data?.stepResult;
+                  const status = resolveExecutionLogStatusForStep(stepResult, true);
                   setExecutionLog((prev) => [
                     ...prev,
                     {
+                      id: `log-step-${Date.now()}`,
+                      nodeId: event.nodeId || stepResult?.nodeId || "system",
+                      status,
+                      message: event.message,
+                      timestamp: new Date(),
+                      data: event.data,
+                    },
+                  ]);
+                } else if (event.type === "complete") {
+                  sawTerminalEvent = true;
+                  const completeData = event.data || {};
+
+                  // Media-library watch mode activation - no execution, just activation
+                  if (completeData.activated) {
+                    setExecutionLog((prev) => [
+                      ...prev.filter((log) => log.status !== "running"),
+                      {
+                        id: `log-activated-${Date.now()}`,
+                        nodeId: "system",
+                        status: "success",
+                        message: completeData.message || "Automation activated - watching for new uploads",
+                        timestamp: new Date(),
+                        data: { description: completeData.description },
+                      },
+                    ]);
+                    setFlow((prev) => ({ ...prev, status: "active" }));
+                  } else {
+                    const completeData = event.data || {};
+                    const completionTimestamp = new Date();
+                    const sharedCompletionData = {
+                      resultId: completeData.resultId,
+                      logs: completeData.logs,
+                      actionType: completeData.actionType || actionType,
+                      accountId: completeData.accountId || actionNode?.config?.accountId,
+                      stepResults: completeData.stepResults,
+                    };
+                    const completionLogs = buildCompletionLogsFromStepResults({
+                      nodes: flow.nodes,
+                      stepResults: completeData.stepResults,
+                      runSuccess: completeData.success !== false,
+                      sharedData: sharedCompletionData,
+                      timestamp: completionTimestamp,
+                    });
+                    const historyLogEntry: ExecutionLog = {
                       id: `log-history-${Date.now()}`,
                       nodeId: "history",
                       status: completeData.executionId ? "success" : "error",
                       message: completeData.executionId ? "Saved to history" : "History save failed",
-                      timestamp: new Date(),
+                      timestamp: completionTimestamp,
                       data: {
                         historyId: completeData.executionId,
                         resultId: completeData.resultId,
                         actionType: completeData.actionType || actionType,
                         accountId: completeData.accountId || actionNode?.config?.accountId,
+                        stepResults: completeData.stepResults,
+                        logs: completeData.logs,
                       },
+                    };
+                    setExecutionLog((prev) => [
+                      ...prev.filter((log) => log.status !== "running"),
+                      ...completionLogs,
+                      historyLogEntry,
+                    ]);
+                    // Store execution ID for later retrieval
+                    if (completeData.executionId) {
+                      setLastExecutionId(completeData.executionId);
+                    }
+                    setFlow((prev) => ({ ...prev, lastRun: new Date() }));
+                  }
+                } else if (event.type === "cancelled") {
+                  sawTerminalEvent = true;
+                  setExecutionLog((prev) => [
+                    ...prev.filter((log) => log.status !== "running"),
+                    {
+                      id: `log-cancelled-${Date.now()}`,
+                      nodeId: "system",
+                      status: "cancelled",
+                      message: event.message || "Execution was cancelled",
+                      timestamp: new Date(),
+                      data: event.data,
                     },
                   ]);
-                  // Store execution ID for later retrieval
-                  if (completeData.executionId) {
-                    setLastExecutionId(completeData.executionId);
+                  if (event.data?.executionId) {
+                    setLastExecutionId(event.data.executionId);
                   }
-                  setFlow((prev) => ({ ...prev, lastRun: new Date() }));
+                } else if (event.type === "error") {
+                  sawTerminalEvent = true;
+                  // `data` carries the run's logs and executionId. Dropping it cost a failed
+                  // run its Technical details panel twice over: `debugLogs` is derived from
+                  // `log.data.logs`, and without `executionId` the history rehydrate in
+                  // `fetchLastExecution` never fires either — so a failure had no path to
+                  // its own logs. Mirrors the `cancelled` branch above.
+                  setExecutionLog((prev) => [
+                    ...prev.filter((log) => log.status !== "running"),
+                    {
+                      id: `log-error-${Date.now()}`,
+                      nodeId: "system",
+                      status: "error",
+                      message: event.message || "Execution failed",
+                      timestamp: new Date(),
+                      data: event.data,
+                    },
+                  ]);
+                  if (event.data?.executionId) {
+                    setLastExecutionId(event.data.executionId);
+                  }
                 }
-              } else if (event.type === "cancelled") {
-                setExecutionLog((prev) => [
-                  ...prev.filter((log) => log.status !== "running"),
-                  {
-                    id: `log-cancelled-${Date.now()}`,
-                    nodeId: "system",
-                    status: "cancelled",
-                    message: event.message || "Execution was cancelled",
-                    timestamp: new Date(),
-                    data: event.data,
-                  },
-                ]);
-                if (event.data?.executionId) {
-                  setLastExecutionId(event.data.executionId);
-                }
-              } else if (event.type === "error") {
-                setExecutionLog((prev) => [
-                  ...prev.filter((log) => log.status !== "running"),
-                  {
-                    id: `log-error-${Date.now()}`,
-                    nodeId: "system",
-                    status: "error",
-                    message: event.message || "Execution failed",
-                    timestamp: new Date(),
-                  },
-                ]);
+              } catch {
+                // Ignore malformed SSE lines
               }
-            } catch {
-              // Ignore malformed SSE lines
             }
           }
         }
-      }
 
-      console.log("[v0] SSE stream complete");
-    } catch (error) {
-      // AbortError means user cancelled — handle gracefully
-      if (error instanceof DOMException && error.name === "AbortError") {
-        console.log("[v0] Automation execution cancelled by user");
-        setExecutionLog((prev) => {
-          // Only add cancelled log if we didn't already receive a cancelled SSE event
-          if (prev.some((log) => log.status === "cancelled")) return prev;
-          return [
-            ...prev.filter((log) => log.status !== "running"),
-            {
-              id: `log-cancelled-${Date.now()}`,
+        console.log("[v0] SSE stream complete");
+
+        // The stream ended without ever telling us how the run finished. Without
+        // this, the lingering "running" log entry survives, `deriveIsExecuting`
+        // stays true, and the panel shows a spinner and a live Cancel button
+        // forever — the run "never completes" purely in the UI. Every other
+        // terminal path already drops that entry; this one used to fall through.
+        if (!sawTerminalEvent) {
+          setExecutionLog((prev) =>
+            appendTerminalLog(prev, {
+              id: `log-error-${Date.now()}`,
               nodeId: "system",
-              status: "cancelled",
-              message: "Execution was cancelled",
+              status: "error",
+              message:
+                "The run stopped responding before it finished — it most likely exceeded the server time limit. Any steps that already ran were still applied; check Run history and your ads manager before re-running.",
               timestamp: new Date(),
-            },
-          ];
-        });
-      } else {
-        console.error("[v0] Automation execution failed:", error);
-        const errorLog: ExecutionLog = {
-          id: `log-error-${Date.now()}`,
-          nodeId: "system",
-          status: "error",
-          message: `Execution failed: ${error instanceof Error ? error.message : "Unknown error"}`,
-          timestamp: new Date(),
-        };
-        // Drop any lingering "running" entries so the panel's derived
-        // `isExecuting` flips false — otherwise the spinner keeps spinning and
-        // the now-inert Cancel button stays on screen forever.
-        setExecutionLog((prev) => appendTerminalLog(prev, errorLog));
+            }),
+          );
+        }
+      } catch (error) {
+        // AbortError means user cancelled — handle gracefully
+        if (error instanceof DOMException && error.name === "AbortError") {
+          console.log("[v0] Automation execution cancelled by user");
+          setExecutionLog((prev) => {
+            // Only add cancelled log if we didn't already receive a cancelled SSE event
+            if (prev.some((log) => log.status === "cancelled")) return prev;
+            return [
+              ...prev.filter((log) => log.status !== "running"),
+              {
+                id: `log-cancelled-${Date.now()}`,
+                nodeId: "system",
+                status: "cancelled",
+                message: "Execution was cancelled",
+                timestamp: new Date(),
+              },
+            ];
+          });
+        } else {
+          console.error("[v0] Automation execution failed:", error);
+          const errorLog: ExecutionLog = {
+            id: `log-error-${Date.now()}`,
+            nodeId: "system",
+            status: "error",
+            message: `Execution failed: ${error instanceof Error ? error.message : "Unknown error"}`,
+            timestamp: new Date(),
+          };
+          // Drop any lingering "running" entries so the panel's derived
+          // `isExecuting` flips false — otherwise the spinner keeps spinning and
+          // the now-inert Cancel button stays on screen forever.
+          setExecutionLog((prev) => appendTerminalLog(prev, errorLog));
+        }
+      } finally {
+        executionAbortRef.current = null;
+        setIsExecuting(false);
       }
-    } finally {
-      executionAbortRef.current = null;
-      setIsExecuting(false);
-    }
-  }, [editorIdentity.canMutate, editorIdentity.existingRuleId, flow.nodes, flow.name, flow.selectedAccountId]);
+    },
+    [
+      editorIdentity.canMutate,
+      editorIdentity.existingRuleId,
+      flow.nodes,
+      flow.name,
+      flow.selectedAccountId,
+      runCommentAutomation,
+    ],
+  );
 
   const cancelExecution = useCallback(() => {
     if (executionAbortRef.current) {
@@ -1300,21 +1596,17 @@ export function AutomationProvider({
 
       // Add step results as logs
       if (execution.stepResults && Array.isArray(execution.stepResults)) {
-        for (const step of execution.stepResults) {
-          logs.push({
-            id: `log-step-${step.nodeId}-${Date.now()}`,
-            nodeId: step.nodeId || "system",
-            status: step.success ? "success" : "error",
-            message: step.success
-              ? `Completed ${step.stepType}: ${step.service} - ${step.event}`
-              : step.error || "Failed",
-            timestamp: new Date(execution.executedAt),
-            data: {
-              stepResults: execution.stepResults,
-              logs: execution.executionLogs,
-            },
-          });
-        }
+        const completionLogs = buildCompletionLogsFromStepResults({
+          nodes: flow.nodes,
+          stepResults: execution.stepResults,
+          runSuccess: execution.status === "completed",
+          sharedData: {
+            stepResults: execution.stepResults,
+            logs: execution.executionLogs,
+          },
+          timestamp: new Date(execution.executedAt),
+        });
+        logs.push(...completionLogs);
       }
 
       // Add history log entry
@@ -1338,12 +1630,45 @@ export function AutomationProvider({
     } catch (error) {
       console.error("Failed to fetch last execution:", error);
     }
-  }, [lastExecutionId, isExecuting]);
+  }, [lastExecutionId, isExecuting, flow.nodes]);
+
+  // Fetch a comment automation's last run from CommentsServer. Comment rules
+  // never write to AutomationExecution, so `fetchLastExecution` above has
+  // nothing to find for them — this is what lets the Execution Results panel
+  // show a comment automation's outcome and matched comments after a refresh
+  // or a fresh page load, not just while its run is still live in this tab.
+  const fetchLastCommentRun = useCallback(async () => {
+    if (isExecuting) return;
+    const ruleId = editorIdentity.existingRuleId;
+    if (ruleId === null) return;
+    const triggerNode = findCommentTriggerNode(flow.nodes);
+    const actionNode = findCommentActionNode(flow.nodes);
+    if (!triggerNode || !actionNode) return;
+
+    try {
+      const { runs } = await automationApi.getRuleRuns(ruleId, 1, 0);
+      const latestRun = runs[0];
+      if (!latestRun) return;
+
+      const { comments } = await automationApi.getRunDetails(latestRun.id);
+      const logs = buildRehydratedCommentRunLogs({
+        triggerNodeId: triggerNode.id,
+        actionNodeId: actionNode.id,
+        run: latestRun,
+        comments,
+      });
+      if (logs) setExecutionLog(logs);
+    } catch (error) {
+      console.error("Failed to fetch last comment automation run:", error);
+    }
+  }, [editorIdentity.existingRuleId, flow.nodes, isExecuting]);
 
   return (
     <AutomationContext.Provider
       value={{
         flow,
+        draftEditVersion,
+        restoreAssistantDraft,
         editorIdentity,
         updateFlowName,
         setFlowActive,
@@ -1370,6 +1695,9 @@ export function AutomationProvider({
         loadAutomation,
         lastExecutionId,
         fetchLastExecution,
+        fetchLastCommentRun,
+        showExecutionPanel,
+        setShowExecutionPanel,
       }}
     >
       {children}
@@ -1427,8 +1755,19 @@ function buildHunchSharedConfig(config: Record<string, any>): Record<string, any
 
 function normalizeAutomationNodesForSave(nodes: AutomationNode[]): AutomationNode[] {
   return nodes.map((node) => {
-    if (node.type !== "action" || node.event !== "Launch Ad") return node;
-    return { ...node, config: normalizeLaunchAdTargetConfig(node.config || {}) };
+    if (node.type === "action" && node.event === "Launch Ad") {
+      return { ...node, config: normalizeLaunchAdTargetConfig(node.config || {}) };
+    }
+    // ADM-11225: drop schedule fields the chosen frequency does not use. The
+    // panel hides "Scheduled Date" for recurring rules but never cleared it, so
+    // a stale one-time date rode along on every save and ended up overwriting
+    // the dayOfWeek-derived occurrence.
+    if (node.type === "trigger" && node.service === "scheduled") {
+      const config = node.config || {};
+      const stripped = stripInapplicableScheduleFields(config);
+      return stripped === config ? node : { ...node, config: stripped };
+    }
+    return node;
   });
 }
 

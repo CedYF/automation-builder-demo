@@ -1,13 +1,84 @@
-import { apiClient } from "../../_lib/api/client";
+import { apiClient, AuthenticationError } from "../../_lib/api/client";
 
 // ============================================
 // Types
 // ============================================
 
+/**
+ * Why a comment is unwelcome under an ad, judged independently of sentiment.
+ * Mirrors `ModerationCategory` in CommentsServer.
+ *
+ * Deliberately separate from the sentiment score: an objectifying comment
+ * ("The jugs on this one are superb!") scores ~90 as enthusiastic praise, so no
+ * `sentimentMax` rule can ever catch it.
+ */
+export type ModerationCategory =
+  | "clean"
+  | "profanity"
+  | "harassment"
+  | "hate_speech"
+  | "sexual"
+  | "violence"
+  | "scam"
+  // Categorical hostility to AI as a technology ("AI slop", "AI is theft"),
+  // not dissatisfaction with an AI product's output, which stays "clean".
+  | "anti_ai"
+  | "self_harm";
+
+/**
+ * What a commenter is trying to do, judged by the intent classifier. Mirrors
+ * `CommentIntent` in CommentsServer. `other` and `unknown` exist server-side
+ * but are never offered in a rule — see `SELECTABLE_INTENTS`.
+ */
+export type CommentIntent =
+  | "purchase"
+  | "price_question"
+  | "product_question"
+  | "availability_question"
+  | "support_request"
+  | "complaint"
+  | "praise"
+  | "tag_friend"
+  | "spam_promo"
+  | "other"
+  | "unknown";
+
+/**
+ * A workspace-defined intent the classifier can also assign. `description` and
+ * `examples` are what the LLM reads, so they carry the meaning; `id` is a slug
+ * of the original name, assigned by the server and stable across renames.
+ */
+export interface CustomIntent {
+  id: string;
+  name: string;
+  description: string;
+  examples?: string[];
+}
+
 export interface AutomationConditions {
+  /**
+   * How the matching conditions combine: "all" (default) needs every condition
+   * set on the rule, "any" fires on the first one that holds. Exclusions and
+   * scoping (excludeKeywords, excludeAuthorIds, ad/adset/campaign ids,
+   * isAdOnly, targetType) always apply on top of either mode.
+   */
+  matchMode?: "all" | "any";
   sentimentFilter?: "all" | "positive" | "neutral" | "negative";
   sentimentMin?: number;
   sentimentMax?: number;
+  /**
+   * Match comments whose stored moderation verdict is one of these. Fail-closed:
+   * a comment with no verdict, or an `unknown` one, never matches.
+   */
+  moderationCategories?: ModerationCategory[];
+  /**
+   * Match comments whose stored intent verdict is one of these built-in
+   * intents. Together with `customIntents` this is ONE condition ("intent is
+   * any of"): a comment matches when either list hits.
+   */
+  intents?: CommentIntent[];
+  /** Ids of the workspace's custom intents (see {@link CustomIntent}). */
+  customIntents?: string[];
   keywords?: string[];
   excludeKeywords?: string[];
   authorIds?: string[];
@@ -37,6 +108,13 @@ export interface AutomationActionConfig {
 /** Which surface a rule (and its comments) live on. */
 export type CommentPlatform = "facebook" | "instagram";
 
+/**
+ * What a rule does to a matching comment. Mirrors the CommentsServer
+ * `AUTOMATION_ACTION_TYPES` list; every action-keyed map in the UI derives its
+ * keys from this union so a new action cannot be silently unhandled.
+ */
+export type CommentActionType = "hide" | "delete" | "reply" | "like";
+
 export interface AutomationRule {
   id: number;
   name: string;
@@ -44,7 +122,7 @@ export interface AutomationRule {
   platform?: CommentPlatform;
   triggerType: "realtime" | "scheduled" | "manual";
   conditions: AutomationConditions;
-  actionType: "hide" | "delete" | "reply";
+  actionType: CommentActionType;
   actionConfig: AutomationActionConfig;
   frequency?: string;
   scheduledTime?: string;
@@ -62,9 +140,10 @@ export interface AutomationRule {
 export interface CreateRuleParams {
   name: string;
   platform?: CommentPlatform;
+  pagePlatforms?: Readonly<Record<string, CommentPlatform>>;
   triggerType: "realtime" | "scheduled" | "manual";
   conditions: AutomationConditions;
-  actionType: "hide" | "delete" | "reply";
+  actionType: CommentActionType;
   actionConfig?: AutomationActionConfig;
   frequency?: string;
   scheduledTime?: string;
@@ -73,6 +152,12 @@ export interface CreateRuleParams {
   workspaceId?: string;
   adAccountId?: string;
   pageIds: string[];
+  /**
+   * When true, each created rule is also executed once (in the background, on
+   * the server) against the comments already stored for its page, so the
+   * automation covers history instead of only newly received comments.
+   */
+  processExisting?: boolean;
 }
 
 export interface UpdateRuleParams {
@@ -81,11 +166,32 @@ export interface UpdateRuleParams {
   platform?: CommentPlatform;
   triggerType?: "realtime" | "scheduled" | "manual";
   conditions?: AutomationConditions;
-  actionType?: "hide" | "delete" | "reply";
+  actionType?: CommentActionType;
   actionConfig?: AutomationActionConfig;
   frequency?: string;
   scheduledTime?: string;
   pageId?: string;
+}
+
+/**
+ * One edit applied to every per-page rule of an automation. `pageIds` is the
+ * page set the automation should end up covering: CommentsServer patches the
+ * pages kept, creates rules for pages added, and deletes those removed.
+ */
+export interface SyncGroupParams {
+  /** Absent while the automation predates group ids; the server assigns one. */
+  groupId?: string;
+  name?: string;
+  status?: "active" | "paused";
+  platform?: CommentPlatform;
+  triggerType?: "realtime" | "scheduled" | "manual";
+  conditions?: AutomationConditions;
+  actionType?: CommentActionType;
+  actionConfig?: AutomationActionConfig;
+  frequency?: string;
+  scheduledTime?: string;
+  pageIds?: string[];
+  pagePlatforms?: Readonly<Record<string, CommentPlatform>>;
 }
 
 export interface ExecuteRuleParams {
@@ -96,6 +202,11 @@ export interface ExecuteRuleParams {
   pageId?: string;
   // Required for all executions
   encryptedUserToken: string;
+  /**
+   * Shared by every page's run started from one builder "Run" click, so
+   * History can show them as one run.
+   */
+  runGroupId?: string;
 }
 
 /** Acknowledgement for background (adAccountId/pageId) executions. */
@@ -131,6 +242,7 @@ export interface ProcessedComment {
   commentSnapshot?: {
     message?: string;
     authorName?: string;
+    authorProfilePicture?: string;
     sentiment?: number;
   };
   processedAt: string;
@@ -152,6 +264,16 @@ export interface AutomationRun {
   failedCount: number;
   startedAt: string;
   completedAt?: string;
+  /**
+   * Comments Meta would not let the action see — deleted, or the page lost
+   * access — counted apart from failures. Optional for back-compat.
+   */
+  unavailableCount?: number;
+  /**
+   * Shared by every page's run from one builder "Run" click; null for realtime
+   * runs and runs from before it existed. Optional for back-compat.
+   */
+  runGroupId?: string | null;
 }
 
 export interface RuleRunsResponse {
@@ -186,8 +308,26 @@ export interface AccountRun extends AutomationRun {
   firstComment?: {
     message?: string;
     authorName?: string;
+    authorProfilePicture?: string;
     sentiment?: number;
   } | null;
+  /**
+   * Page (or IG account) the run's rule watches — an automation is one rule
+   * per page, so this names which page a multi-page automation's run was on.
+   * Optional for back-compat with responses that predate it.
+   */
+  pageId?: string | null;
+  platform?: "facebook" | "instagram";
+  /** Null when the page is no longer connected. */
+  pageName?: string | null;
+  pagePicture?: string | null;
+  /**
+   * The first error this run recorded, shown on hover so a failure can be read
+   * without opening the run. Absent on responses that predate it.
+   */
+  errorMessage?: string | null;
+  /** Which bucket that error fell in: "failed" or "unavailable". */
+  errorResult?: string | null;
 }
 
 export interface AccountRunsResponse {
@@ -255,10 +395,14 @@ export const getRule = async (ruleId: number): Promise<AutomationRule> => {
  * Create one or more automation rules.
  * Backend creates one rule per pageId in `pageIds` and returns the full array.
  */
-export const createRule = async (params: CreateRuleParams): Promise<AutomationRule[]> => {
+export const createRule = async (params: CreateRuleParams, facebookToken: string): Promise<AutomationRule[]> => {
+  if (!facebookToken) {
+    throw new AuthenticationError("Connect Facebook before creating comment automations.");
+  }
   const result = await apiClient.post<AutomationRule[]>(
     "/comment-automation/rules",
     params as unknown as Record<string, unknown>,
+    { token: facebookToken, timeoutMs: null },
   );
 
   return result;
@@ -368,6 +512,59 @@ export const getRunsByAdAccount = async (
   });
 };
 
+/** How many runs one page of a comment automation has had. */
+export interface RunPageCount {
+  pageId: string;
+  platform: "facebook" | "instagram";
+  /** Null when the page is no longer connected. */
+  pageName: string | null;
+  pagePicture: string | null;
+  runCount: number;
+}
+
+export interface RuleSetRunsResponse extends AccountRunsResponse {
+  ruleIds: number[];
+  /**
+   * Run count per member page, across every page even when `pageId` narrowed
+   * the runs. Optional for back-compat with responses that predate it.
+   */
+  pages?: RunPageCount[];
+  /**
+   * Run count per outcome, across every outcome even when `outcome` narrowed
+   * the runs — so the filter's own numbers never move as it is used.
+   */
+  outcomes?: RunOutcomeCount[];
+}
+
+/** How a run ended, as History filters it. */
+export type RunOutcome = "success" | "failed" | "unavailable" | "interrupted" | "running" | "skipped";
+
+export interface RunOutcomeCount {
+  outcome: RunOutcome;
+  runCount: number;
+}
+
+/**
+ * Get all runs across a set of rules — the per-page members of one comment
+ * automation. Scoped by rule id so runs from other automations on the same
+ * pages stay out; `pageId` narrows the runs (and `total`) to one member page.
+ */
+export const getRunsByRuleIds = async (
+  ruleIds: readonly number[],
+  limit: number = 20,
+  offset: number = 0,
+  pageId?: string,
+  outcome?: RunOutcome,
+): Promise<RuleSetRunsResponse> => {
+  return apiClient.get<RuleSetRunsResponse>("/comment-automation/runs/by-rule", {
+    ruleIds: ruleIds.join(","),
+    limit,
+    offset,
+    ...(pageId ? { pageId } : {}),
+    ...(outcome ? { outcome } : {}),
+  });
+};
+
 /**
  * Get all runs across one or more pages.
  * Scopes by pageId (stable) instead of adAccountId, which can drift when a
@@ -396,7 +593,165 @@ export const getPagesForAdAccount = async (
   });
 };
 
+/** One comment a rule would act on, as returned by the dry run. */
+export interface RulePreviewComment {
+  commentId: string;
+  message: string;
+  authorName: string | null;
+  pageId: string | null;
+  postId: string | null;
+  isReply: boolean;
+  sentimentScore?: number;
+  /** When the stored score was written. Preview does not re-score live. */
+  sentimentAnalyzedAt?: string | null;
+  isHidden: boolean;
+  createdAt: string | null;
+  /** Whether the comment was left on an ad post (Facebook only). */
+  isAd?: boolean;
+  platform?: CommentPlatform;
+}
+
+/**
+ * What a rule would do right now, without doing it.
+ *
+ * `alreadyHandled` is reported alongside `matched` on purpose: rules are
+ * repeat-safe, so comments this rule already acted on are deliberately absent
+ * from `comments`. Without that count, a healthy rule previewing "0 matches"
+ * reads as broken.
+ */
+export interface RulePreviewResult {
+  scanned: number;
+  matched: number;
+  alreadyHandled: number;
+  truncated: boolean;
+  comments: RulePreviewComment[];
+  blocked: Array<{ commentId: string; reason: string }>;
+}
+
+export interface PreviewRuleParams {
+  conditions: AutomationConditions;
+  platform?: CommentPlatform;
+  /** Page (or IG account) to scan. Omit or pass "all" to scan every subscribed page. */
+  pageId?: string;
+  /** Selected pages when the rule covers more than one. Preferred over pageId: "all". */
+  pageIds?: string[];
+  adAccountId?: string;
+  /** Set when editing a saved rule, so already-handled comments are reported separately. */
+  ruleId?: number;
+  limit?: number;
+  /**
+   * Needed for the server to resolve `conditions.customIntents` to the
+   * workspace's definitions. Harmless otherwise, so send it whenever known.
+   */
+  workspaceId?: string;
+}
+
+export const PREVIEW_RULE_AUTH_ERROR = "Connect Facebook before previewing comment automations.";
+
+/**
+ * Dry-run a rule's conditions against real synced comments.
+ *
+ * The verdict comes from CommentsServer, which reuses the same matcher and the
+ * same candidate query the live run uses. Matching is deliberately NOT
+ * re-implemented here: the previous browser-side preview drifted from the
+ * server (it ignored `matchMode`) and under-reported matches.
+ *
+ * The endpoint is guarded like every other comment-reading route (it returns
+ * comment bodies and author names, and page ids are public), so the caller's
+ * Facebook token must travel with the request. Sending none made every
+ * preview fail with "Access denied. Authorization token is required."
+ * (ADM-12013). The token is not used to call Graph — the dry run reads only
+ * our own DB — it is the authentication bar.
+ */
+export const previewRule = async (
+  params: PreviewRuleParams,
+  facebookToken: string | null | undefined,
+): Promise<RulePreviewResult> => {
+  if (!facebookToken) {
+    throw new AuthenticationError(PREVIEW_RULE_AUTH_ERROR);
+  }
+  return apiClient.post<RulePreviewResult>(
+    "/comment-automation/rules/preview",
+    {
+      conditions: params.conditions,
+      platform: params.platform,
+      pageId: params.pageId,
+      pageIds: params.pageIds,
+      adAccountId: params.adAccountId,
+      ruleId: params.ruleId,
+      limit: params.limit,
+      workspaceId: params.workspaceId,
+    },
+    { token: facebookToken },
+  );
+};
+
+// ============================================
+// Custom intents
+// ============================================
+
+interface CustomIntentsResponse {
+  success: boolean;
+  data?: { workspaceId: string; intents: CustomIntent[] };
+  error?: string;
+}
+
+export const CUSTOM_INTENTS_AUTH_ERROR = "Connect Facebook before managing custom intents.";
+/** Server-side cap on the list; mirrored so the form can refuse before the round-trip. */
+export const MAX_CUSTOM_INTENTS = 30;
+export const CUSTOM_INTENT_NAME_MAX = 80;
+export const CUSTOM_INTENT_DESCRIPTION_MAX = 400;
+export const CUSTOM_INTENT_EXAMPLE_MAX = 200;
+export const CUSTOM_INTENT_MAX_EXAMPLES = 5;
+
+/** Fetch a workspace's custom intents. Guarded like the other automation routes (caller's Facebook token). */
+export const getCustomIntents = async (
+  workspaceId: string,
+  facebookToken: string | null | undefined,
+): Promise<CustomIntent[]> => {
+  if (!facebookToken) {
+    throw new AuthenticationError(CUSTOM_INTENTS_AUTH_ERROR);
+  }
+  const response = await apiClient.get<CustomIntentsResponse>(
+    "/comment-automation/custom-intents",
+    { workspaceId },
+    { token: facebookToken },
+  );
+  if (!response.success) {
+    throw new Error(response.error || "Failed to load custom intents");
+  }
+  return response.data?.intents ?? [];
+};
+
+/**
+ * Replace a workspace's custom intents (the endpoint is a whole-list PUT).
+ * Always send existing entries back with their `id` so renames keep the id a
+ * saved rule refers to; the server assigns an id to entries that omit one.
+ * Returns the persisted list.
+ */
+export const saveCustomIntents = async (
+  workspaceId: string,
+  intents: Array<Omit<CustomIntent, "id"> & { id?: string }>,
+  facebookToken: string | null | undefined,
+): Promise<CustomIntent[]> => {
+  if (!facebookToken) {
+    throw new AuthenticationError(CUSTOM_INTENTS_AUTH_ERROR);
+  }
+  const response = await apiClient.put<CustomIntentsResponse>(
+    "/comment-automation/custom-intents",
+    { workspaceId, intents },
+    { token: facebookToken },
+  );
+  if (!response.success) {
+    throw new Error(response.error || "Failed to save custom intents");
+  }
+  return response.data?.intents ?? [];
+};
+
 export const automationApi = {
+  previewRule,
+  getCustomIntents,
+  saveCustomIntents,
   getRules,
   getRule,
   createRule,
@@ -407,6 +762,7 @@ export const automationApi = {
   cancelRuleExecution,
   getRuleHistory,
   getRuleRuns,
+  getRunsByRuleIds,
   getRunDetails,
   getRunsByAdAccount,
   getRunsByPages,

@@ -110,7 +110,7 @@ function pauseTurn(message: string, accountId?: string, accountName?: string): O
             "call-2",
             AUTOMATION_BUILDER_TOOLS.ADD,
             {
-              stepId: "trigger-1",
+              stepId: "node-trigger-1",
               type: "trigger",
               service: "meta-ads",
               event: "Performance Threshold",
@@ -127,21 +127,21 @@ function pauseTurn(message: string, accountId?: string, accountName?: string): O
           builderTool(
             "call-3",
             AUTOMATION_BUILDER_TOOLS.ADD,
-            { stepId: "action-1", type: "action", service: "meta-ads", event: "Pause Ad", position: 1, config: {} },
+            { stepId: "node-action-1", type: "action", service: "meta-ads", event: "Pause Ad", position: 1, config: {} },
             "Action: pause the matching ads",
           ),
           builderTool(
             "call-4",
             AUTOMATION_BUILDER_TOOLS.ADD,
             {
-              stepId: "action-2",
+              stepId: "node-action-2",
               type: "action",
               service: "notification",
               event: "Send Notification",
               position: 2,
               config: {
                 notificationMethod: "slack",
-                customMessage: "Paused {{trigger.adName}} — ROAS {{trigger.roas}} over the last 7 days.",
+                customMessage: "Paused {{node-trigger-1.adName}} — ROAS {{node-trigger-1.roas}} over the last 7 days.",
               },
             },
             "Action: post a Slack summary",
@@ -177,7 +177,7 @@ function scaleTurn(message: string, accountId?: string, accountName?: string): O
             "call-2",
             AUTOMATION_BUILDER_TOOLS.ADD,
             {
-              stepId: "trigger-1",
+              stepId: "node-trigger-1",
               type: "trigger",
               service: "meta-ads",
               event: "Performance Threshold",
@@ -195,7 +195,7 @@ function scaleTurn(message: string, accountId?: string, accountName?: string): O
             "call-3",
             AUTOMATION_BUILDER_TOOLS.ADD,
             {
-              stepId: "action-1",
+              stepId: "node-action-1",
               type: "action",
               service: "meta-ads",
               event: "Increase Budget",

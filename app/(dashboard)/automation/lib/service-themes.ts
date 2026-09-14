@@ -14,6 +14,17 @@ export interface ServiceTheme {
 }
 
 export const serviceThemes: Record<string, ServiceTheme> = {
+  monday: {
+    id: "monday",
+    label: "Monday.com",
+    description: "Work management automation",
+    icon: "M",
+    color: "#6161FF",
+    gradient: "from-indigo-500 to-violet-600",
+    lightBg: "bg-indigo-50",
+    iconBg: "bg-gradient-to-br from-indigo-100 to-violet-200",
+    borderColor: "border-indigo-200",
+  },
   "meta-ads": {
     id: "meta-ads",
     label: "Meta Ads",

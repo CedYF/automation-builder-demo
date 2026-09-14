@@ -1,13 +1,29 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createChatApiClient, isAssistantOutputEvent } from "@/app/chat/lib/chat-api-client";
 import { isRetryableStreamError } from "@/lib/errors/transient-client-error";
 import type { ChatStreamEvent, ToolCallRecord } from "@/lib/chat/types";
 import type { AutomationFlow } from "../contexts/automation-context";
 import { ASSISTANT_FLOW_TOOL_NAME, buildAssistantFlowFromToolArgs } from "../lib/assistant-flow";
-import { applyAutomationToolCall, isAutomationBuilderTool, type AssistantCanvasApi } from "../lib/assistant-canvas";
+import {
+  applyAutomationToolCall,
+  AUTOMATION_BUILDER_TOOLS,
+  isAutomationBuilderTool,
+  type AssistantCanvasApi,
+} from "../lib/assistant-canvas";
 import type { ParsedAutomationSuggestion } from "../lib/parse-assistant-suggestions";
+import {
+  buildAutomationCanvasDraftForRequest,
+  withAutomationCanvasOpenSlots,
+} from "@/lib/chat/automation-canvas-context";
+import {
+  isAutomationExplanationRequest,
+  resolveAutomationChatDestination,
+  type AutomationChatDestination,
+} from "@/lib/chat/automation-chat-intent";
+import { listCanvasOpenSlots } from "../lib/canvas-open-slots";
+import { inferAutomationAccountPlatform } from "../lib/automation-account-platform";
 
 const ASSISTANT_STREAM_URL = "/api/automation-assistant/stream";
 
@@ -22,9 +38,12 @@ function delay(ms: number): Promise<void> {
 export interface AssistantToolCall {
   readonly id: string;
   readonly name: string;
+  /** Needed to render ask_user as an answerable question card. */
+  readonly args: Record<string, unknown>;
   readonly status: ToolCallRecord["status"];
   readonly resultText?: string;
   readonly errorMessage?: string;
+  readonly latencyMs?: number;
   /** True for the create_automation call the builder applies to the canvas. */
   readonly isFlowProposal: boolean;
   /** True for the live canvas builder tools (start_flow/add_step/update_step/remove_step). */
@@ -45,15 +64,29 @@ export interface AssistantMessage {
   readonly toolCalls: AssistantToolCall[];
   /** Present when the user picked a ranked suggestion to build on canvas. */
   readonly suggestionBuild?: SuggestionBuildMetadata;
+  /**
+   * Mode of the turn this message belongs to. Ranked-suggestion parsing (the "TOP
+   * PICK" / "Build this" cards) only makes sense for a "suggest" scan reply — an
+   * "explain this automation" or edit-request reply can accidentally use the same
+   * numbered/bolded shape and must never be read as buildable suggestions.
+   */
+  readonly mode?: AssistantMode;
+  readonly handoff?: { destination: AutomationChatDestination; prompt: string };
+  readonly startedAt?: number;
+  readonly durationMs?: number;
+  readonly outcome?: "completed" | "failed" | "cancelled";
 }
 
 interface UseAutomationAssistantOptions {
   readonly selectedAccountId?: string;
   readonly selectedAccountName?: string;
+  /** Live automation flow — serialized into each assistant request for edit/remove turns. */
+  readonly flow: AutomationFlow;
   /** Live canvas surface the builder tools drive as they stream. */
   readonly canvas: AssistantCanvasApi;
   /** Fallback for a whole-flow create_automation call (legacy path). */
   readonly onFlowProposed: (flow: AutomationFlow) => void;
+  readonly onTurnStart?: () => void;
 }
 
 /** "suggest" makes the assistant scan the account and recommend automations before building. */
@@ -73,20 +106,24 @@ function toAssistantToolCall(record: ToolCallRecord): AssistantToolCall {
   return {
     id: record.id,
     name: record.name,
+    args: record.args,
     status: record.status,
     resultText: record.resultText,
     errorMessage: record.errorMessage,
+    latencyMs: record.latencyMs,
     isFlowProposal: record.name === ASSISTANT_FLOW_TOOL_NAME,
     isBuilderStep: isAutomationBuilderTool(record.name),
   };
 }
 
 export function useAutomationAssistant(options: UseAutomationAssistantOptions): UseAutomationAssistantResult {
-  const { selectedAccountId, selectedAccountName, canvas, onFlowProposed } = options;
+  const { selectedAccountId, selectedAccountName, flow, canvas, onFlowProposed } = options;
 
   // Keep a live ref so the streaming closure always applies to the current canvas.
   const canvasRef = useRef<AssistantCanvasApi>(canvas);
   canvasRef.current = canvas;
+  const flowRef = useRef<AutomationFlow>(flow);
+  flowRef.current = flow;
 
   // Always read the latest account at send time (avoids stale closures racing auto-select).
   const selectedAccountIdRef = useRef(selectedAccountId);
@@ -100,10 +137,26 @@ export function useAutomationAssistant(options: UseAutomationAssistantOptions): 
 
   const conversationIdRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  /** Guards against two sends starting in the same tick; see `streamTurn`. */
+  const inFlightRef = useRef(false);
   const clientRef = useRef(createChatApiClient());
   const appliedFlowToolIdsRef = useRef<Set<string>>(new Set());
-  const appliedBuilderStartIdsRef = useRef<Set<string>>(new Set());
+  /**
+   * A start_flow call held back until the rebuild's first step arrives, because
+   * applying it clears the canvas. Null whenever no reset is awaiting a step.
+   */
+  const pendingFlowStartRef = useRef<{ readonly id: string; readonly record: ToolCallRecord } | null>(null);
+  const consumedFlowStartIdsRef = useRef<Set<string>>(new Set());
   const turnCounterRef = useRef(0);
+  const explanationOnlyRef = useRef(false);
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
+  useEffect(
+    () => () => {
+      abortRef.current?.abort();
+    },
+    [],
+  );
 
   const upsertAssistantToolCall = useCallback((assistantId: string, record: ToolCallRecord) => {
     setMessages((prev) =>
@@ -134,7 +187,7 @@ export function useAutomationAssistant(options: UseAutomationAssistantOptions): 
 
   const maybeApplyFlow = useCallback(
     (record: ToolCallRecord) => {
-      if (record.name !== ASSISTANT_FLOW_TOOL_NAME) return;
+      if (record.name !== ASSISTANT_FLOW_TOOL_NAME || explanationOnlyRef.current) return;
       if (appliedFlowToolIdsRef.current.has(record.id)) return;
       const flow = buildAssistantFlowFromToolArgs(record.name, record.args, {
         selectedAccountId,
@@ -147,25 +200,90 @@ export function useAutomationAssistant(options: UseAutomationAssistantOptions): 
     [onFlowProposed, selectedAccountId, selectedAccountName],
   );
 
-  // Apply builder tools on tool_start for live feedback, then re-apply on tool_result
-  // when args are complete (tool_start often arrives with partial/empty config).
-  const maybeApplyBuilderStep = useCallback((record: ToolCallRecord, eventType: "tool_start" | "tool_result") => {
-    if (!isAutomationBuilderTool(record.name)) return;
+  const getCanvasStepCount = useCallback(() => buildAutomationCanvasDraftForRequest(flowRef.current).steps.length, []);
 
-    const isResult = eventType === "tool_result";
-    const shouldApply = isResult ? record.status === "done" : !appliedBuilderStartIdsRef.current.has(record.id);
-
-    if (!shouldApply) return;
-
-    if (!isResult) {
-      appliedBuilderStartIdsRef.current.add(record.id);
-    }
-
-    applyAutomationToolCall(record, canvasRef.current);
+  const resolveSelectedAccountPlatform = useCallback((): string | null => {
+    const accountId = selectedAccountIdRef.current?.trim();
+    if (!accountId) return null;
+    return inferAutomationAccountPlatform({ businessId: accountId, type: null, tikId: null });
   }, []);
+
+  const applyBuilderToolToCanvas = useCallback(
+    (record: ToolCallRecord) => {
+      applyAutomationToolCall(record, canvasRef.current, {
+        canvasSteps: buildAutomationCanvasDraftForRequest(flowRef.current).steps,
+        selectedAccountId: selectedAccountIdRef.current,
+        selectedAccountPlatform: resolveSelectedAccountPlatform(),
+      });
+    },
+    [resolveSelectedAccountPlatform],
+  );
+
+  /** Applies a held-back start_flow now that a rebuild step has actually arrived. */
+  const flushPendingFlowStart = useCallback(() => {
+    const pending = pendingFlowStartRef.current;
+    if (!pending) return;
+    pendingFlowStartRef.current = null;
+    consumedFlowStartIdsRef.current.add(pending.id);
+    applyBuilderToolToCanvas(pending.record);
+  }, [applyBuilderToolToCanvas]);
+
+  /**
+   * start_flow clears the canvas, so applying it the moment it streams in destroys the
+   * user's flow before we know the rebuild can finish. When the turn then stops to ask a
+   * question, errors, or stalls, they are left staring at a wiped or half-built canvas
+   * with no undo. Holding the reset until the first step of the rebuild arrives keeps a
+   * completed rebuild identical to before, and makes an abandoned one a no-op. An empty
+   * canvas has nothing to lose, so it resets immediately and picks up the new name.
+   */
+  const maybeApplyFlowStart = useCallback(
+    (record: ToolCallRecord) => {
+      if (consumedFlowStartIdsRef.current.has(record.id)) return;
+      if (getCanvasStepCount() === 0) {
+        consumedFlowStartIdsRef.current.add(record.id);
+        applyBuilderToolToCanvas(record);
+        return;
+      }
+      pendingFlowStartRef.current = { id: record.id, record };
+    },
+    [applyBuilderToolToCanvas, getCanvasStepCount],
+  );
+
+  // Apply only successful results; streamed arguments may still be incomplete.
+  const maybeApplyBuilderStep = useCallback(
+    (record: ToolCallRecord, eventType: "tool_start" | "tool_result") => {
+      if (!isAutomationBuilderTool(record.name) || explanationOnlyRef.current) return;
+
+      const isResult = eventType === "tool_result";
+      const shouldApply = isResult && record.status === "done";
+
+      if (!shouldApply) return;
+
+      if (record.name === AUTOMATION_BUILDER_TOOLS.START) {
+        maybeApplyFlowStart(record);
+        return;
+      }
+
+      flushPendingFlowStart();
+      applyBuilderToolToCanvas(record);
+    },
+    [applyBuilderToolToCanvas, flushPendingFlowStart, maybeApplyFlowStart],
+  );
 
   const handleEvent = useCallback(
     (assistantId: string, event: ChatStreamEvent) => {
+      if (
+        explanationOnlyRef.current &&
+        (event.type === "tool_start" || event.type === "tool_result" || event.type === "pending_tool") &&
+        (isAutomationBuilderTool(event.toolCall.name) || event.toolCall.name === ASSISTANT_FLOW_TOOL_NAME)
+      ) {
+        upsertAssistantToolCall(assistantId, {
+          ...event.toolCall,
+          status: "discarded",
+          errorMessage: "Your question did not request a draft change.",
+        });
+        return;
+      }
       switch (event.type) {
         case "conversation":
           conversationIdRef.current = event.conversationId;
@@ -173,12 +291,11 @@ export function useAutomationAssistant(options: UseAutomationAssistantOptions): 
         case "tool_start":
           upsertAssistantToolCall(assistantId, event.toolCall);
           maybeApplyBuilderStep(event.toolCall, "tool_start");
-          maybeApplyFlow(event.toolCall);
           return;
         case "tool_result":
           upsertAssistantToolCall(assistantId, event.toolCall);
           maybeApplyBuilderStep(event.toolCall, "tool_result");
-          maybeApplyFlow(event.toolCall);
+          if (event.toolCall.status === "done") maybeApplyFlow(event.toolCall);
           return;
         case "pending_tool":
           // Gated writes pause the agent. Only create_automation is harvested onto
@@ -211,16 +328,34 @@ export function useAutomationAssistant(options: UseAutomationAssistantOptions): 
       mode: AssistantMode,
       userMessageExtras: Pick<AssistantMessage, "suggestionBuild"> = {},
     ): Promise<void> => {
+      // Synchronous latch. The `isLoading` guards in the callers read state
+      // captured in their closure, which is still `false` for a second call in
+      // the same tick (a fast double-click, or two effects flushing in one
+      // commit) — both would fire and each would create its own conversation.
+      if (inFlightRef.current) return;
+      inFlightRef.current = true;
+
+      explanationOnlyRef.current = isAutomationExplanationRequest(trimmed);
+      optionsRef.current.onTurnStart?.();
+      const startedAt = Date.now();
       const turn = turnCounterRef.current++;
       const userMessage: AssistantMessage = {
         id: `user-${turn}`,
         role: "user",
         text: trimmed,
         toolCalls: [],
+        mode,
         ...userMessageExtras,
       };
       const assistantId = `assistant-${turn}`;
-      const assistantMessage: AssistantMessage = { id: assistantId, role: "assistant", text: "", toolCalls: [] };
+      const assistantMessage: AssistantMessage = {
+        id: assistantId,
+        startedAt,
+        role: "assistant",
+        text: "",
+        toolCalls: [],
+        mode,
+      };
       setMessages((prev) => [...prev, userMessage, assistantMessage]);
       setIsLoading(true);
       setError(null);
@@ -230,12 +365,20 @@ export function useAutomationAssistant(options: UseAutomationAssistantOptions): 
 
       const accountIdAtSend = selectedAccountIdRef.current;
       const accountNameAtSend = selectedAccountNameRef.current;
+      const accountPlatformAtSend = resolveSelectedAccountPlatform();
+      const canvasDraft = withAutomationCanvasOpenSlots(
+        buildAutomationCanvasDraftForRequest(flowRef.current),
+        listCanvasOpenSlots(flowRef.current),
+      );
 
+      let turnFailed = false;
       try {
         // A transient SSE drop *before* any output (planning / first tool) is safe to replay: nothing
         // was applied to the canvas yet, and `resume` stops the server re-appending the user turn.
         for (let attempt = 0; attempt <= MAX_STREAM_RETRIES; attempt++) {
+          if (controller.signal.aborted) return;
           let producedOutput = false;
+          let hasPartialTurn = false;
           try {
             await clientRef.current.stream(
               ASSISTANT_STREAM_URL,
@@ -244,11 +387,21 @@ export function useAutomationAssistant(options: UseAutomationAssistantOptions): 
                 message: trimmed,
                 adAccountId: accountIdAtSend,
                 accountName: accountNameAtSend,
+                accountPlatform: accountPlatformAtSend ?? undefined,
                 mode,
+                canvasDraft,
                 resume: attempt > 0,
               },
               (event) => {
-                if (isAssistantOutputEvent(event)) producedOutput = true;
+                if (controller.signal.aborted) return;
+                if (event.type === "error") turnFailed = true;
+                if (event.type === "conversation") {
+                  hasPartialTurn = true;
+                }
+                if (isAssistantOutputEvent(event)) {
+                  producedOutput = true;
+                  hasPartialTurn = true;
+                }
                 handleEvent(assistantId, event);
               },
               controller.signal,
@@ -256,28 +409,72 @@ export function useAutomationAssistant(options: UseAutomationAssistantOptions): 
             return;
           } catch (err) {
             if (err instanceof DOMException && err.name === "AbortError") return;
-            const canRetry = attempt < MAX_STREAM_RETRIES && !producedOutput && isRetryableStreamError(err);
+            // Without a conversation id the retry cannot carry `resume`, so the
+            // server would treat it as a brand-new chat and create a second
+            // conversation for the same prompt. Surface the error instead.
+            const hasConversation = conversationIdRef.current !== null;
+            const canRetry =
+              attempt < MAX_STREAM_RETRIES && !producedOutput && hasConversation && isRetryableStreamError(err);
             if (!canRetry) {
               const messageText = err instanceof Error ? err.message : "The assistant hit an error. Try again.";
+              turnFailed = true;
               setError(messageText);
               return;
             }
-            resetAssistantTurn(assistantId);
+            if (!hasPartialTurn) {
+              resetAssistantTurn(assistantId);
+            }
             await delay(STREAM_RETRY_BASE_DELAY_MS * 2 ** attempt);
           }
         }
       } finally {
+        setMessages((previous) =>
+          previous.map((message) =>
+            message.id === assistantId
+              ? {
+                  ...message,
+                  durationMs: Date.now() - startedAt,
+                  outcome: controller.signal.aborted ? "cancelled" : turnFailed ? "failed" : "completed",
+                }
+              : message,
+          ),
+        );
+        // A reset still waiting on its first step means the rebuild never happened.
+        // Dropping it leaves the user's existing flow on the canvas untouched.
+        pendingFlowStartRef.current = null;
         if (abortRef.current === controller) abortRef.current = null;
+        inFlightRef.current = false;
         setIsLoading(false);
       }
     },
-    [handleEvent, resetAssistantTurn],
+    [handleEvent, resetAssistantTurn, resolveSelectedAccountPlatform],
   );
 
   const sendMessage = useCallback(
     async (content: string, mode: AssistantMode = "build") => {
       const trimmed = content.trim();
       if (!trimmed || isLoading) {
+        return;
+      }
+      const destination = resolveAutomationChatDestination(trimmed);
+      if (destination) {
+        const turn = turnCounterRef.current++;
+        const text =
+          destination === "mcp"
+            ? "You can connect AdManage to Claude from MCP Setup. Your current automation stays as it is."
+            : "This request fits the main assistant. Continue there with your request and selected account carried over; your automation draft stays here.";
+        setMessages((previous) => [
+          ...previous,
+          { id: `user-${turn}`, role: "user", text: trimmed, toolCalls: [], mode },
+          {
+            id: `assistant-${turn}`,
+            role: "assistant",
+            text,
+            toolCalls: [],
+            mode,
+            handoff: { destination, prompt: trimmed },
+          },
+        ]);
         return;
       }
       await streamTurn(trimmed, mode);
@@ -308,7 +505,8 @@ export function useAutomationAssistant(options: UseAutomationAssistantOptions): 
     abortRef.current = null;
     conversationIdRef.current = null;
     appliedFlowToolIdsRef.current = new Set();
-    appliedBuilderStartIdsRef.current = new Set();
+    pendingFlowStartRef.current = null;
+    consumedFlowStartIdsRef.current = new Set();
     setMessages([]);
     setError(null);
     setIsLoading(false);
@@ -316,8 +514,6 @@ export function useAutomationAssistant(options: UseAutomationAssistantOptions): 
 
   const stop = useCallback(() => {
     abortRef.current?.abort();
-    abortRef.current = null;
-    setIsLoading(false);
   }, []);
 
   return { messages, isLoading, error, sendMessage, sendSuggestionBuild, clear, stop };

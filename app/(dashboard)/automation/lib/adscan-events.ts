@@ -3,7 +3,7 @@
  *
  * The trigger was originally registered as "New Competitor Ad Matches Filters"
  * (kept here as the legacy alias) and renamed to "New Competitor Ad" in
- * an earlier fix. Persisted automation rules created before the rename still hold
+ * ADM-5914. Persisted automation rules created before the rename still hold
  * the legacy event string in their flow JSON, so dispatch/match/render code
  * accepts BOTH values via the helpers below.
  */
@@ -12,7 +12,7 @@ export const ADSCAN_SERVICE = "adscan" as const;
 
 export const ADSCAN_NEW_COMPETITOR_AD_EVENT = "New Competitor Ad" as const;
 
-/** Legacy event name persisted on rules created before an earlier fix. */
+/** Legacy event name persisted on rules created before ADM-5914. */
 export const ADSCAN_NEW_COMPETITOR_AD_EVENT_LEGACY = "New Competitor Ad Matches Filters" as const;
 
 export const ADSCAN_NEW_COMPETITOR_AD_EVENT_NAMES: readonly string[] = [
@@ -26,13 +26,13 @@ export function isAdscanNewCompetitorAdEvent(event: string | null | undefined): 
   return event === ADSCAN_NEW_COMPETITOR_AD_EVENT || event === ADSCAN_NEW_COMPETITOR_AD_EVENT_LEGACY;
 }
 
-/** Canonical event for the advertiser-launch-volume trigger. */
+/** Canonical event for the advertiser-launch-volume trigger (ADM-5938). */
 export const ADSCAN_ADVERTISER_LAUNCH_VOLUME_EVENT = "Advertiser Launch Volume" as const;
 
 /**
  * Default rolling window (days) for the advertiser-launch-volume trigger.
  * Centralised here so the executor, summary helpers, and config form stay in
- * sync — see an earlier fix.
+ * sync — see ADM-5938.
  */
 export const ADSCAN_LAUNCH_VOLUME_DEFAULT_WINDOW_DAYS = 30 as const;
 

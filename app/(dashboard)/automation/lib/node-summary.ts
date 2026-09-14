@@ -15,6 +15,13 @@ import {
   isAdscanNewCompetitorAdEvent,
 } from "./adscan-events";
 import { summarizePollingSchedule } from "./polling-run-time";
+import { MODERATION_LABEL } from "@/app/(dashboard)/comments/_features/automation/utils/moderation-labels";
+import { intentLabel } from "@/app/(dashboard)/comments/_features/automation/utils/intent-labels";
+import {
+  formatCommentScheduleBadge,
+  isCommentsScheduledTriggerEvent,
+  readCommentScheduleFields,
+} from "./comment-flow-mapper";
 import {
   getToneValueLabel,
   inferToneValue,
@@ -25,6 +32,8 @@ import {
 export interface SummaryBadge {
   label: string;
   tone?: "primary" | "muted" | "warning";
+  /** Full list of selected options a collapsed count label (e.g. "3 categories") stands in for. Shown on hover. */
+  details?: string[];
 }
 
 export interface NodeSummary {
@@ -38,7 +47,7 @@ export interface NodeSummary {
   conditionSummary?: string;
   /** Scope summary (e.g. "All campaigns", "Summer Sale", "Contains: Scaling"). */
   scopeSummary?: string;
-  /** Recipient / destination summary ("Email + In-app · you@example.com"). */
+  /** Recipient / destination summary ("Email + In-app · ced@admanage.ai"). */
   destinationSummary?: string;
   /** Human-readable run cadence ("Daily 9am", "Hourly", "Every 5 minutes"). */
   frequencyLabel?: string;
@@ -61,7 +70,7 @@ const METRIC_LABELS: Record<string, string> = {
 
 // Performance Monitoring's "cpa" resolves to Meta's `cost_per_result` (objective-dependent),
 // which is distinct from Performance Threshold's purchase-based CPA. Label it accurately on the
-// monitoring node card so the two triggers don't look identical.
+// monitoring node card so the two triggers don't look identical (ADM-7527).
 const MONITORING_METRIC_LABELS: Record<string, string> = {
   ...METRIC_LABELS,
   cpa: "Cost per Result",
@@ -95,7 +104,7 @@ const LEVEL_LABELS: Record<string, string> = {
  * on purpose: their label depends on the rule's own run hour, weekdays and day
  * of month, so it is computed by {@link summarizePollingSchedule} instead of
  * hardcoded here (this table used to claim "Daily 9am" / "Weekly Mon" for every
- * rule, which stopped being true with an earlier fix and an earlier fix).
+ * rule, which stopped being true with ADM-9818 and ADM-10118).
  */
 const FREQUENCY_LABELS: Record<string, string> = {
   manual: "Manual",
@@ -159,7 +168,7 @@ function formatSpendRange(min: number | null | undefined, max: number | null | u
 }
 
 /**
- * Render the US-rank cutoff badge for the `us_ranking` criterion.
+ * Render the US-rank cutoff badge for the `us_ranking` criterion (ADM-5955).
  * Mirrors `formatViewsRange` shape — returns `null` when no bound is set so
  * the caller can skip pushing an empty badge.
  *
@@ -260,7 +269,11 @@ function summarizeAdscanCompetitorTrigger(config: Record<string, any>, badges: S
   if (advertiserNames.length === 1) {
     badges.push({ label: advertiserNames[0], tone: "primary" });
   } else if (advertiserNames.length > 1) {
-    badges.push({ label: `${advertiserNames[0]} +${advertiserNames.length - 1}`, tone: "primary" });
+    badges.push({
+      label: `${advertiserNames[0]} +${advertiserNames.length - 1}`,
+      tone: "primary",
+      details: advertiserNames,
+    });
   }
 
   const platforms: string[] = Array.isArray(config.adscanPlatforms) ? config.adscanPlatforms : [];
@@ -277,7 +290,7 @@ function summarizeAdscanCompetitorTrigger(config: Record<string, any>, badges: S
   );
   if (formatLabel) badges.push({ label: formatLabel, tone: "primary" });
 
-  // an earlier fix: criterion is mutually exclusive — only render the active tab's
+  // ADM-5955: criterion is mutually exclusive — only render the active tab's
   // bound badges. `views_spend` (UK/EU) and `us_ranking` (US-only) bind to
   // different upstream filters; mixing badges would mislead the user about
   // what the rule actually fires on. Default to `views_spend` for legacy
@@ -315,7 +328,7 @@ function summarizeAdscanCompetitorTrigger(config: Record<string, any>, badges: S
 
 /**
  * Pushes the badges that summarise an Adscan "Advertiser Launch Volume"
- * trigger config. Mirrors `summarizeAdscanCompetitorTrigger` —
+ * trigger config (ADM-5938). Mirrors `summarizeAdscanCompetitorTrigger` —
  * leading advertiser badge, threshold badge, frequency badge.
  */
 function summarizeAdscanLaunchVolumeTrigger(config: Record<string, any>, badges: SummaryBadge[]): void {
@@ -326,7 +339,11 @@ function summarizeAdscanLaunchVolumeTrigger(config: Record<string, any>, badges:
   if (advertiserNames.length === 1) {
     badges.push({ label: advertiserNames[0], tone: "primary" });
   } else if (advertiserNames.length > 1) {
-    badges.push({ label: `${advertiserNames[0]} +${advertiserNames.length - 1}`, tone: "primary" });
+    badges.push({
+      label: `${advertiserNames[0]} +${advertiserNames.length - 1}`,
+      tone: "primary",
+      details: advertiserNames,
+    });
   }
 
   const minCount = config.adscanLaunchVolumeMinCount;
@@ -415,6 +432,7 @@ function summarizeTrigger(node: AutomationNode, ctx: NodeSummaryContext = {}): N
       const t = config.adSetFilterType;
       if (!t || t === "all") return "All ad sets";
       if (t === "contains" && config.adSetNameFilter) return `Ad sets contain "${config.adSetNameFilter}"`;
+      if (t === "not_contains" && config.adSetNameFilter) return `Ad sets do not contain "${config.adSetNameFilter}"`;
       return null;
     })();
     const adScope = (() => {
@@ -574,10 +592,13 @@ function summarizeTrigger(node: AutomationNode, ctx: NodeSummaryContext = {}): N
   } else if (node.service === ADSCAN_SERVICE && isAdscanAdvertiserLaunchVolumeEvent(node.event)) {
     summarizeAdscanLaunchVolumeTrigger(config, badges);
   } else if (node.service === "comments") {
-    summarizeCommentsTrigger(config, badges);
+    summarizeCommentsTrigger(node.event, config, badges);
   }
 
-  const frequencyLabel = describeFrequencyBadge(config);
+  const commentSchedule = isCommentsScheduledTriggerEvent(node.event) ? readCommentScheduleFields(config) : null;
+  const frequencyLabel = commentSchedule
+    ? formatCommentScheduleBadge(commentSchedule.frequency, commentSchedule.scheduledTime)
+    : describeFrequencyBadge(config);
 
   const subtitleParts = [frequencyLabel, levelLabel].filter(Boolean);
 
@@ -625,7 +646,16 @@ function formatCommentsToneBadge(tone: ToneConditionValue): string | null {
   return `Sentiment ${tone.min}–${tone.max}`;
 }
 
-function summarizeCommentsTrigger(config: Record<string, unknown>, badges: SummaryBadge[]): void {
+function summarizeCommentsTrigger(
+  event: string | undefined,
+  config: Record<string, unknown>,
+  badges: SummaryBadge[],
+): void {
+  const isScheduled = isCommentsScheduledTriggerEvent(event);
+  if (isScheduled) {
+    const schedule = readCommentScheduleFields(config);
+    badges.push({ label: formatCommentScheduleBadge(schedule.frequency, schedule.scheduledTime), tone: "primary" });
+  }
   const pageIds = Array.isArray(config.pageIds)
     ? config.pageIds.filter((id): id is string => typeof id === "string" && id.length > 0)
     : [];
@@ -653,7 +683,7 @@ function summarizeCommentsTrigger(config: Record<string, unknown>, badges: Summa
   if (keywords.length === 1) {
     badges.push({ label: `Contains "${keywords[0]}"`, tone: "primary" });
   } else if (keywords.length > 1) {
-    badges.push({ label: `Contains ${keywords.length} keywords`, tone: "primary" });
+    badges.push({ label: `Contains ${keywords.length} keywords`, tone: "primary", details: keywords });
   }
 
   const excludeKeywords = Array.isArray(conditions.excludeKeywords)
@@ -666,12 +696,50 @@ function summarizeCommentsTrigger(config: Record<string, unknown>, badges: Summa
           ? `Excludes "${excludeKeywords[0]}"`
           : `Excludes ${excludeKeywords.length} keywords`,
       tone: "muted",
+      details: excludeKeywords.length > 1 ? excludeKeywords : undefined,
     });
   }
 
   const toneBadge = formatCommentsToneBadge(readCommentsToneValue(config));
   if (toneBadge) {
     badges.push({ label: toneBadge, tone: "primary" });
+  }
+
+  // Moderation verdicts are editable in /comments as well as here, so a rule
+  // can arrive carrying one this card never set. Without a badge the collapsed
+  // step under-describes what the rule actually matches.
+  const moderationCategories = Array.isArray(conditions.moderationCategories)
+    ? conditions.moderationCategories.filter((category): category is string => typeof category === "string")
+    : [];
+  if (moderationCategories.length === 1) {
+    const label = MODERATION_LABEL[moderationCategories[0] as keyof typeof MODERATION_LABEL];
+    badges.push({ label: `Flagged as ${label ?? moderationCategories[0]}`, tone: "primary" });
+  } else if (moderationCategories.length > 1) {
+    const categoryLabels = moderationCategories.map(
+      (category) => MODERATION_LABEL[category as keyof typeof MODERATION_LABEL] ?? category,
+    );
+    badges.push({
+      label: `Flagged as ${moderationCategories.length} categories`,
+      tone: "primary",
+      details: categoryLabels,
+    });
+  }
+
+  // Intent is editable in /comments as well, and — like moderation — a rule can
+  // carry only this condition, so it needs a badge of its own. Built-in and
+  // custom picks are one "any of" list; custom ids have no name resolver here,
+  // so they show as their id (the slug of the name).
+  const intents = Array.isArray(conditions.intents)
+    ? conditions.intents.filter((intent): intent is string => typeof intent === "string")
+    : [];
+  const customIntents = Array.isArray(conditions.customIntents)
+    ? conditions.customIntents.filter((id): id is string => typeof id === "string")
+    : [];
+  const intentLabels = [...intents.map(intentLabel), ...customIntents];
+  if (intentLabels.length === 1) {
+    badges.push({ label: `Intent: ${intentLabels[0]}`, tone: "primary" });
+  } else if (intentLabels.length > 1) {
+    badges.push({ label: `${intentLabels.length} intents`, tone: "primary", details: intentLabels });
   }
 
   if (conditions.targetType === "comment") {
@@ -699,9 +767,9 @@ function summarizeCommentsTrigger(config: Record<string, unknown>, badges: Summa
   }
 
   // Preview uses badges to decide whether the step looks configured. Always
-  // surface a baseline chip for Comments so an empty Setup does not show the
-  // generic "Configure this step" placeholder after the trigger is chosen.
-  if (badges.length === 0) {
+  // surface a baseline chip for realtime Comments triggers so an empty Setup
+  // does not show the generic "Configure this step" placeholder after the trigger is chosen.
+  if (!isScheduled && badges.length === 0) {
     badges.push({ label: "New comment trigger", tone: "muted" });
   }
 }
