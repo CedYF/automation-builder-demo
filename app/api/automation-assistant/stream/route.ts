@@ -22,6 +22,16 @@ const STEP_DELAY_MS = 550;
 /** Longer pause before the first token, standing in for model latency. */
 const THINKING_DELAY_MS = 900;
 
+interface ConversationState {
+  turns: number;
+  /** Summary of the turn a dropped connection already completed server-side. */
+  undeliveredSummary: string | null;
+}
+
+/** Module state, so it resets with the dev server like the automation store. */
+const conversations = new Map<string, ConversationState>();
+let nextConversationNumber = 1;
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -39,7 +49,22 @@ export async function POST(request: Request) {
     return new Response("Request body was not valid JSON", { status: 400 });
   }
 
-  const turn = buildMockTurn(body);
+  const conversationId = body.conversationId ?? `mock-conversation-${nextConversationNumber++}`;
+  const state = conversations.get(conversationId) ?? { turns: 0, undeliveredSummary: null };
+  conversations.set(conversationId, state);
+
+  // A resumed request re-runs the turn the dropped attempt already counted.
+  const turnIndex = body.resume && state.turns > 0 ? state.turns - 1 : state.turns;
+  // TODO(candidate): server-side logEvent for tool_call events (tool, durationMs, outcome) belongs here.
+  const turn = buildMockTurn({ ...body, conversationId, turnIndex });
+
+  // The first attempt of this scenario finishes server-side but the connection drops
+  // before the client receives anything. The retry then replays that summary as well.
+  const dropsConnection = turn.scenario === "competitor-retry" && !body.resume;
+  const replayedSummary = body.resume ? state.undeliveredSummary : null;
+  if (!body.resume) state.turns += 1;
+  state.undeliveredSummary = dropsConnection ? turn.closing : null;
+
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream<Uint8Array>({
@@ -48,6 +73,12 @@ export async function POST(request: Request) {
 
       try {
         send({ type: "conversation", conversationId: turn.conversationId, title: turn.title });
+
+        if (dropsConnection) {
+          await sleep(THINKING_DELAY_MS);
+          controller.error(new TypeError("network error"));
+          return;
+        }
 
         for (const beat of turn.beats) {
           send({ type: "thinking" });
@@ -66,13 +97,13 @@ export async function POST(request: Request) {
           }
         }
 
-        send({ type: "text", text: turn.closing });
+        send({ type: "text", text: replayedSummary ? `${replayedSummary}\n\n${turn.closing}` : turn.closing });
         send({ type: "done" });
         controller.enqueue(encoder.encode(encodeDone()));
       } catch (error) {
         send({ type: "error", message: error instanceof Error ? error.message : "Mock stream failed" });
       } finally {
-        controller.close();
+        if (!dropsConnection) controller.close();
       }
     },
   });

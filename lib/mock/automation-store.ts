@@ -39,28 +39,61 @@ export interface StoredRule {
 }
 
 const DEMO_ACCOUNT_ID = "act_100200300";
-const DEMO_ACCOUNT_NAME = "Northwind Coffee — UK";
+const DEMO_ACCOUNT_NAME = "Demo Store — UK";
 
 /**
  * Seed rules.
  *
- * Three is deliberate: one simple threshold rule that is the natural thing to
- * open first, one scaling rule so the list is not monotonous, and one paused
- * draft so the table's status states are all visible without editing anything.
+ * The two flagship flows plus a paused digest, so the table's status states are
+ * all visible without editing anything. The scheduled pause is seeded as a draft:
+ * its Saturday 00:00 stop and its timezone are not represented in the flow.
  */
 const SEED_RULES: StoredRule[] = [
   {
     id: 101,
-    name: "Pause underperforming ads",
+    name: "Hide negative comments",
     status: "active",
-    frequency: "daily",
+    frequency: null,
     accountId: DEMO_ACCOUNT_ID,
     accountName: DEMO_ACCOUNT_NAME,
-    company: "northwind",
+    company: "demo-store",
     workspaceId: "ws_demo",
     createdAt: "2026-06-02T09:12:00.000Z",
     updatedAt: "2026-07-28T16:04:00.000Z",
-    lastRun: "2026-08-03T09:00:00.000Z",
+    lastRun: null,
+    flow: {
+      nodes: [
+        {
+          id: "trigger-1",
+          type: "trigger",
+          service: "comments",
+          event: "New Comment",
+          position: 0,
+          config: { pageIds: ["demo_page_001"], conditions: { sentimentFilter: "negative" }, processExisting: false },
+        },
+        {
+          id: "action-1",
+          type: "action",
+          service: "comments",
+          event: "Hide Comment",
+          position: 1,
+          config: {},
+        },
+      ],
+    },
+  },
+  {
+    id: 102,
+    name: "Pause low-spend ads (Friday 23:00)",
+    status: "draft",
+    frequency: "weekly",
+    accountId: DEMO_ACCOUNT_ID,
+    accountName: DEMO_ACCOUNT_NAME,
+    company: "demo-store",
+    workspaceId: "ws_demo",
+    createdAt: "2026-06-14T11:40:00.000Z",
+    updatedAt: "2026-07-30T10:22:00.000Z",
+    lastRun: null,
     flow: {
       nodes: [
         {
@@ -70,12 +103,15 @@ const SEED_RULES: StoredRule[] = [
           event: "Performance Threshold",
           position: 0,
           config: {
-            checkFrequency: "daily",
-            checkTime: "09:00",
-            conditions: [{ metric: "roas", operator: "less_than", value: 1.5 }],
-            minimumSpend: 50,
+            level: "ad",
+            metric: "spend",
+            comparison: "less_than",
+            threshold: 5,
+            minimumSpend: 0,
             lookbackWindow: 7,
-            campaignNameFilterType: "all",
+            checkFrequency: "weekly",
+            checkDays: ["friday"],
+            checkTime: "23:00",
           },
         },
         {
@@ -85,57 +121,6 @@ const SEED_RULES: StoredRule[] = [
           event: "Pause Ad",
           position: 1,
           config: {},
-        },
-        {
-          id: "action-2",
-          type: "action",
-          service: "notification",
-          event: "Send Notification",
-          position: 2,
-          config: {
-            notificationMethod: "slack",
-            customMessage: "Paused {{trigger.adName}} — ROAS {{trigger.roas}} over the last 7 days.",
-          },
-        },
-      ],
-    },
-  },
-  {
-    id: 102,
-    name: "Scale winning ad sets",
-    status: "active",
-    frequency: "daily",
-    accountId: DEMO_ACCOUNT_ID,
-    accountName: DEMO_ACCOUNT_NAME,
-    company: "northwind",
-    workspaceId: "ws_demo",
-    createdAt: "2026-06-14T11:40:00.000Z",
-    updatedAt: "2026-07-30T10:22:00.000Z",
-    lastRun: "2026-08-03T09:00:00.000Z",
-    flow: {
-      nodes: [
-        {
-          id: "trigger-1",
-          type: "trigger",
-          service: "meta-ads",
-          event: "Performance Threshold",
-          position: 0,
-          config: {
-            checkFrequency: "daily",
-            checkTime: "10:00",
-            conditions: [{ metric: "roas", operator: "greater_than", value: 3 }],
-            minimumSpend: 100,
-            lookbackWindow: 7,
-            campaignNameFilterType: "all",
-          },
-        },
-        {
-          id: "action-1",
-          type: "action",
-          service: "meta-ads",
-          event: "Increase Budget",
-          position: 1,
-          config: { budgetChangeType: "percentage", budgetChangeValue: 20 },
         },
       ],
     },
@@ -147,7 +132,7 @@ const SEED_RULES: StoredRule[] = [
     frequency: "weekly",
     accountId: DEMO_ACCOUNT_ID,
     accountName: DEMO_ACCOUNT_NAME,
-    company: "northwind",
+    company: "demo-store",
     workspaceId: "ws_demo",
     createdAt: "2026-07-01T08:05:00.000Z",
     updatedAt: "2026-07-19T14:47:00.000Z",
@@ -199,7 +184,7 @@ export function upsertRule(input: Partial<StoredRule> & { id?: number }, timesta
     frequency: input.frequency ?? base?.frequency ?? null,
     accountId: input.accountId ?? base?.accountId ?? DEMO_ACCOUNT_ID,
     accountName: input.accountName ?? base?.accountName ?? DEMO_ACCOUNT_NAME,
-    company: input.company ?? base?.company ?? "northwind",
+    company: input.company ?? base?.company ?? "demo-store",
     workspaceId: input.workspaceId ?? base?.workspaceId ?? "ws_demo",
     createdAt: base?.createdAt ?? timestamp,
     updatedAt: timestamp,

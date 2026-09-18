@@ -8,7 +8,7 @@ import { AlertTriangle } from "lucide-react";
  * The real app has 51 of these. Most are bound to a live platform API (Meta ad
  * accounts, TikTok identities, Google Sheets and Drive pickers, Frame.io, Notion),
  * so reproducing them without credentials would mean faking a dozen integrations
- * for no benefit to the task in TASK.md.
+ * for no benefit to the task in README.md.
  *
  * They are stubbed rather than deleted so `config-panel.tsx` keeps the exact
  * routing shape it has in production: every trigger and action the registry can

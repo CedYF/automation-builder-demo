@@ -87,7 +87,7 @@ export function DetailSidebar() {
 
         <div className="px-4 pb-4">
           <p className="text-[10px] leading-relaxed text-sidebar-foreground/40">
-            Demo build. Automations only — see TASK.md.
+            Demo build. Automations only — see README.md.
           </p>
         </div>
       </div>

@@ -103,7 +103,7 @@ interface UserContextType {
 
 const MOCK_WORKSPACE: Workspace = {
   id: "ws_demo",
-  name: "Northwind Coffee",
+  name: "Demo Store",
   icon: null,
   metaAccountId: 1,
   tiktokAccountId: null,
@@ -114,21 +114,21 @@ const MOCK_WORKSPACE: Workspace = {
   adAccounts: [
     {
       id: 1,
-      accountName: "Northwind Coffee — UK",
+      accountName: "Demo Store — UK",
       accountId: "act_100200300",
       currency: "GBP",
       amountSpent: 184320,
-      businessName: "Northwind Coffee Ltd",
+      businessName: "Demo Store Ltd",
       type: "OWNED",
       updatedAt: "2026-01-05T09:00:00.000Z",
     },
     {
       id: 2,
-      accountName: "Northwind Coffee — US",
+      accountName: "Demo Store — US",
       accountId: "act_100200301",
       currency: "USD",
       amountSpent: 96140,
-      businessName: "Northwind Coffee Ltd",
+      businessName: "Demo Store Ltd",
       type: "OWNED",
       updatedAt: "2026-01-05T09:00:00.000Z",
     },
@@ -137,7 +137,7 @@ const MOCK_WORKSPACE: Workspace = {
 
 const MOCK_ORGANIZATION: Organization = {
   id: "org_demo",
-  name: "Northwind Coffee",
+  name: "Demo Store",
   createdAt: "2026-01-05T09:00:00.000Z",
   logo: null,
   // Must be a name `lib/billing/plans.ts` recognises, and not "essential":
@@ -145,7 +145,7 @@ const MOCK_ORGANIZATION: Organization = {
   // padlocks every template.
   plan: "in-house",
   planOverride: null,
-  company: "northwind",
+  company: "demo-store",
   slackChannel: null,
   workspaces: [MOCK_WORKSPACE],
 };
@@ -154,7 +154,7 @@ const MOCK_USER: ExtendedUser = {
   id: "user_demo",
   email: "demo@example.com",
   name: "Demo User",
-  company: "northwind",
+  company: "demo-store",
   defaultOrganization: MOCK_ORGANIZATION.id,
   defaultWorkspaceId: MOCK_WORKSPACE.id,
   defaultAccountId: "act_100200300",
@@ -180,7 +180,7 @@ const MOCK_USER: ExtendedUser = {
     businessName: account.businessName,
     accountName: account.accountName,
     type: account.type,
-    company: "northwind",
+    company: "demo-store",
     workspaceId: MOCK_WORKSPACE.id,
   })),
 };
