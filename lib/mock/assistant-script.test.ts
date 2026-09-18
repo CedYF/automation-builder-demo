@@ -19,6 +19,11 @@ describe("scripted assistant baseline", () => {
     expect(buildMockTurn({ message: "Reply to FAQ comments", turnIndex: 3 }).beats.length).toBeGreaterThan(0);
   });
 
+  it("stays in the FAQ loop whatever the customer answers", () => {
+    const scenario = pickScenario({ message: "the main page", turnIndex: 1, activeScenario: "faq-loop" });
+    expect(scenario).toBe("faq-loop");
+  });
+
   it("builds a Meta action for a Pinterest request on a Meta account (baseline defect)", () => {
     const turn = buildMockTurn({ message: "Pause my Pinterest ads under $5", accountPlatform: "meta" });
     const services = turn.beats.flatMap((beat) => beat.toolCalls ?? []).map((call) => call.args.service);
@@ -29,7 +34,7 @@ describe("scripted assistant baseline", () => {
 
   it("drops the Friday schedule when the timezone is answered (baseline defect)", () => {
     const first = buildMockTurn({ message: "Pause ads under CHF 5 spend, Friday 23:00 to Saturday 00:00" });
-    const second = buildMockTurn({ message: "Zurich time", turnIndex: 1 });
+    const second = buildMockTurn({ message: "Zurich time", turnIndex: 1, activeScenario: "scheduled-pause" });
     const configOf = (turn: ReturnType<typeof buildMockTurn>) =>
       turn.beats.flatMap((beat) => beat.toolCalls ?? []).find((call) => call.args.stepId === "node-trigger-1")?.args
         .config as Record<string, unknown>;

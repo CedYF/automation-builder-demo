@@ -1,6 +1,6 @@
 import { encodeDone, encodeEvent } from "@/lib/chat/sse";
 import type { ChatStreamEvent, ToolCallRecord } from "@/lib/chat/types";
-import { buildMockTurn, type MockTurnRequest } from "@/lib/mock/assistant-script";
+import { buildMockTurn, type MockScenarioId, type MockTurnRequest } from "@/lib/mock/assistant-script";
 
 /**
  * Mock assistant stream.
@@ -26,6 +26,7 @@ interface ConversationState {
   turns: number;
   /** Summary of the turn a dropped connection already completed server-side. */
   undeliveredSummary: string | null;
+  scenario: MockScenarioId | null;
 }
 
 /** Module state, so it resets with the dev server like the automation store. */
@@ -50,13 +51,14 @@ export async function POST(request: Request) {
   }
 
   const conversationId = body.conversationId ?? `mock-conversation-${nextConversationNumber++}`;
-  const state = conversations.get(conversationId) ?? { turns: 0, undeliveredSummary: null };
+  const state = conversations.get(conversationId) ?? { turns: 0, undeliveredSummary: null, scenario: null };
   conversations.set(conversationId, state);
 
   // A resumed request re-runs the turn the dropped attempt already counted.
   const turnIndex = body.resume && state.turns > 0 ? state.turns - 1 : state.turns;
   // TODO(candidate): server-side logEvent for tool_call events (tool, durationMs, outcome) belongs here.
-  const turn = buildMockTurn({ ...body, conversationId, turnIndex });
+  const turn = buildMockTurn({ ...body, conversationId, turnIndex, activeScenario: state.scenario ?? undefined });
+  if (turnIndex === 0) state.scenario = turn.scenario;
 
   // The first attempt of this scenario finishes server-side but the connection drops
   // before the client receives anything. The retry then replays that summary as well.

@@ -23,6 +23,8 @@ export interface MockTurnRequest {
   readonly resume?: boolean;
   /** Turns already completed in this conversation, supplied by the route. */
   readonly turnIndex?: number;
+  /** Scenario the conversation started in, supplied by the route. */
+  readonly activeScenario?: MockScenarioId;
 }
 
 /** One unit of visible work: think, optionally say something, optionally call tools. */
@@ -495,15 +497,16 @@ export function pickScenario(request: MockTurnRequest): MockScenarioId {
   const message = request.message ?? "";
   const turnIndex = request.turnIndex ?? 0;
 
+  if (turnIndex > 0 && (request.activeScenario === "faq-loop" || request.activeScenario === "scheduled-pause")) {
+    return request.activeScenario;
+  }
   if (/pinterest/i.test(message) && request.accountPlatform !== "pinterest") return "platform-mismatch";
   if (/\b(faq|frequently asked)\b/i.test(message)) return "faq-loop";
   if (/competitor/i.test(message)) return "competitor-retry";
   if (/\b(hide|delete)\b.*\bcomments?\b|\bcomments?\b.*\b(hide|delete|negative)\b/i.test(message)) {
     return "comment-hide";
   }
-  if (/\b(friday|saturday|chf)\b/i.test(message) || (turnIndex > 0 && /timezone|utc|gmt|cet|bst|zurich/i.test(message))) {
-    return "scheduled-pause";
-  }
+  if (/\b(friday|saturday|chf)\b/i.test(message)) return "scheduled-pause";
   if (wantsPause(message)) return "pause";
   if (wantsScale(message)) return "scale";
   return "fallback";
