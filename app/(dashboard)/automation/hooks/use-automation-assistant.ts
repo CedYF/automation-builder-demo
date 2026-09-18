@@ -379,6 +379,7 @@ export function useAutomationAssistant(options: UseAutomationAssistantOptions): 
           if (controller.signal.aborted) return;
           let producedOutput = false;
           let hasPartialTurn = false;
+          // TODO(candidate): logEvent prompt_submitted (attempt 0) or stream_retry (attempt > 0). No per-turn id exists yet, so retries cannot be tied to one turn.
           try {
             await clientRef.current.stream(
               ASSISTANT_STREAM_URL,
@@ -428,6 +429,7 @@ export function useAutomationAssistant(options: UseAutomationAssistantOptions): 
           }
         }
       } finally {
+        // TODO(candidate): logEvent turn_completed / turn_error with outcome, durationMs and errorCategory.
         setMessages((previous) =>
           previous.map((message) =>
             message.id === assistantId

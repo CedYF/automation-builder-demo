@@ -866,6 +866,7 @@ export function AutomationProvider({
 
   const saveAutomation = useCallback(
     async ({ mode, name }: SaveAutomationOptions): Promise<SaveAutomationResult> => {
+      // TODO(candidate): logEvent flow_saved on success, with flowRevision. Saved is not active.
       if (!editorIdentity.canMutate) {
         return { ok: false, error: editorIdentity.error || "Automation is still loading. Try again." };
       }
