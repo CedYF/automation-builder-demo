@@ -48,6 +48,9 @@ export async function POST(request: Request) {
 
       try {
         send({ type: "conversation", conversationId: turn.conversationId, title: turn.title });
+        if (turn.meta) {
+          send({ type: "turn_meta", problemCategory: turn.meta.problemCategory, askedQuestion: turn.meta.askedQuestion });
+        }
 
         for (const beat of turn.beats) {
           send({ type: "thinking" });

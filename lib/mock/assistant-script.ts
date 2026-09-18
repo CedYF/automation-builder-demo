@@ -18,7 +18,14 @@ export interface MockTurnRequest {
   readonly conversationId?: string;
   readonly adAccountId?: string;
   readonly accountName?: string;
+  readonly accountPlatform?: string;
   readonly mode?: "suggest" | "build";
+}
+
+/** Metadata the scripted turn wants surfaced on the response for telemetry — never rendered raw. */
+export interface MockTurnMeta {
+  readonly problemCategory?: "repeated_confirmation" | "schedule_fidelity" | "unsupported_platform" | "none";
+  readonly askedQuestion?: boolean;
 }
 
 /** One unit of visible work: think, optionally say something, optionally call tools. */
@@ -33,7 +40,60 @@ export interface MockTurn {
   readonly title: string;
   readonly beats: MockBeat[];
   readonly closing: string;
+  readonly meta?: MockTurnMeta;
 }
+
+/**
+ * Fixture directory of connected accounts, standing in for the workspace's real
+ * connections. Used by the platform-mismatch check (C06) to offer a real inline
+ * picker instead of a raw id prompt.
+ */
+export interface DemoAccount {
+  readonly accountId: string;
+  readonly accountName: string;
+  readonly platform: "meta" | "pinterest" | "tiktok";
+}
+
+export const DEMO_ACCOUNT_DIRECTORY: readonly DemoAccount[] = [
+  { accountId: "act_100200300", accountName: "Northwind Coffee — UK (Meta)", platform: "meta" },
+  { accountId: "pin_500600700", accountName: "Northwind Coffee — Pinterest", platform: "pinterest" },
+  { accountId: "tt_700800900", accountName: "Northwind Coffee — TikTok", platform: "tiktok" },
+];
+
+const PLATFORM_KEYWORDS: ReadonlyArray<readonly [DemoAccount["platform"], RegExp]> = [
+  ["pinterest", /\bpinterest\b/i],
+  ["tiktok", /\btiktok\b/i],
+  ["meta", /\b(meta|facebook|instagram)\b/i],
+];
+
+/** Platform the currently-selected account belongs to, defaulting to the seeded Meta demo account. */
+function resolveCurrentPlatform(accountId?: string, accountPlatform?: string): DemoAccount["platform"] {
+  if (accountPlatform === "pinterest" || accountPlatform === "tiktok" || accountPlatform === "meta") {
+    return accountPlatform;
+  }
+  const match = DEMO_ACCOUNT_DIRECTORY.find((account) => account.accountId === accountId);
+  return match?.platform ?? "meta";
+}
+
+/** Platform explicitly named in the request text, if any. */
+function resolveRequestedPlatform(message: string): DemoAccount["platform"] | null {
+  for (const [platform, pattern] of PLATFORM_KEYWORDS) {
+    if (pattern.test(message)) return platform;
+  }
+  return null;
+}
+
+/** True when the message text is exactly (or "use ") one of the directory's account names — an answered picker. */
+function pickedDirectoryAccount(message: string): DemoAccount | null {
+  const normalized = message.trim().toLowerCase().replace(/^use\s+/, "");
+  return DEMO_ACCOUNT_DIRECTORY.find((account) => account.accountName.toLowerCase() === normalized) ?? null;
+}
+
+const PLATFORM_SERVICE: Record<DemoAccount["platform"], string> = {
+  meta: "meta-ads",
+  pinterest: "pinterest-ads",
+  tiktok: "tiktok-ads",
+};
 
 /** ROAS floor used when a request asks to pause losers without naming a number. */
 const DEFAULT_LOSER_ROAS = 1;
@@ -86,14 +146,21 @@ function thresholdConfig(comparison: "less_than" | "greater_than", threshold: nu
   };
 }
 
-function pauseTurn(message: string, accountId?: string, accountName?: string): Omit<MockTurn, "conversationId"> {
+function pauseTurn(
+  message: string,
+  accountId?: string,
+  accountName?: string,
+  platform: DemoAccount["platform"] = "meta",
+): Omit<MockTurn, "conversationId"> {
   const threshold = readThreshold(message, ["below", "under", "less than"]) ?? DEFAULT_LOSER_ROAS;
+  const service = PLATFORM_SERVICE[platform];
+  const platformLabel = platform === "meta" ? "Meta" : platform === "pinterest" ? "Pinterest" : "TikTok";
 
   return {
     title: "Pause underperforming ads",
     beats: [
       {
-        text: `Setting up a daily check that pauses ads under ${threshold} ROAS. I'll add a spend floor so ads with almost no delivery can't trip it.`,
+        text: `Setting up a daily check on **${accountName ?? "the selected account"}** that pauses ${platformLabel} ads under ${threshold} ROAS. I'll add a spend floor so ads with almost no delivery can't trip it.`,
         toolCalls: [
           builderTool(
             "call-1",
@@ -112,7 +179,7 @@ function pauseTurn(message: string, accountId?: string, accountName?: string): O
             {
               stepId: "node-trigger-1",
               type: "trigger",
-              service: "meta-ads",
+              service,
               event: "Performance Threshold",
               position: 0,
               config: thresholdConfig("less_than", threshold),
@@ -127,7 +194,7 @@ function pauseTurn(message: string, accountId?: string, accountName?: string): O
           builderTool(
             "call-3",
             AUTOMATION_BUILDER_TOOLS.ADD,
-            { stepId: "node-action-1", type: "action", service: "meta-ads", event: "Pause Ad", position: 1, config: {} },
+            { stepId: "node-action-1", type: "action", service, event: "Pause Ad", position: 1, config: {} },
             "Action: pause the matching ads",
           ),
           builderTool(
@@ -149,7 +216,109 @@ function pauseTurn(message: string, accountId?: string, accountName?: string): O
         ],
       },
     ],
-    closing: `Built it: any ad under **${threshold} ROAS** that has spent at least ${DEFAULT_MIN_SPEND} over ${DEFAULT_LOOKBACK_DAYS} days gets paused, checked daily at 09:00, with a Slack note each run.\n\nOne thing worth knowing: the spend floor is what stops a brand-new ad with two impressions being judged and paused on day one. Lower it and you will pause things early.\n\nReview the steps and hit Save when it looks right.`,
+    closing: `Built it: any ${platformLabel} ad under **${threshold} ROAS** that has spent at least ${DEFAULT_MIN_SPEND} over ${DEFAULT_LOOKBACK_DAYS} days gets paused, checked daily at 09:00, with a Slack note each run.\n\nOne thing worth knowing: the spend floor is what stops a brand-new ad with two impressions being judged and paused on day one. Lower it and you will pause things early.\n\nReview the steps and hit Save when it looks right.`,
+  };
+}
+
+/**
+ * C01 repro — "repeated confirmation". The mock is stateless per request, which
+ * mirrors the real bug closely: a confirmation-only reply ("build", "go ahead")
+ * re-runs the *same* build from scratch and repeats the *same* closing summary,
+ * instead of recognizing the draft already exists and giving one final answer.
+ * This is intentionally NOT fixed in this pass — see docs/investigation.md.
+ */
+function isConfirmationOnly(message: string): boolean {
+  return /^\s*(build|go ahead|yes|do it|confirm|please build|sounds good)\.?\s*$/i.test(message);
+}
+
+/**
+ * C02 repro — "schedule fidelity". A Sheets automation request naming explicit
+ * weekdays/time/timezone gets substituted with a generic polling trigger that
+ * drops the timezone and asks for an unrelated source ad-set id instead of
+ * confirming the schedule. Not fixed in this pass — see docs/investigation.md.
+ */
+function sheetsScheduleTurn(): Omit<MockTurn, "conversationId"> {
+  return {
+    title: "Sheets automation",
+    beats: [
+      {
+        text: "I'll set this up to poll your Sheet on a recurring schedule.",
+        toolCalls: [
+          builderTool(
+            "call-1",
+            AUTOMATION_BUILDER_TOOLS.START,
+            { name: "Launch new rows from Sheet" },
+            "Started a new automation",
+          ),
+        ],
+      },
+      {
+        text: "Adding the trigger.",
+        toolCalls: [
+          builderTool(
+            "call-2",
+            AUTOMATION_BUILDER_TOOLS.ADD,
+            {
+              stepId: "node-trigger-1",
+              type: "trigger",
+              service: "google-sheets",
+              event: "New Row Added",
+              position: 0,
+              // Bug: no explicit weekdays/timezone captured from "Monday, Tuesday, Wednesday
+              // at 9am EEST" — silently substituted with a generic daily poll.
+              config: { checkFrequency: "daily", checkTime: "09:00" },
+            },
+            "Trigger: check the sheet daily",
+          ),
+        ],
+      },
+    ],
+    closing: "Before I add the launch action — what's the source ad set ID I should duplicate rows from?",
+    meta: { problemCategory: "schedule_fidelity", askedQuestion: true },
+  };
+}
+
+/** C06 fix — offers a real inline picker instead of silently building the wrong platform. */
+function platformMismatchTurn(
+  requestedPlatform: DemoAccount["platform"],
+  currentAccountName: string | undefined,
+): Omit<MockTurn, "conversationId"> {
+  const matches = DEMO_ACCOUNT_DIRECTORY.filter((account) => account.platform === requestedPlatform);
+  const platformLabel = requestedPlatform === "pinterest" ? "Pinterest" : requestedPlatform === "tiktok" ? "TikTok" : "Meta";
+
+  if (matches.length === 0) {
+    return {
+      title: "Unsupported platform",
+      beats: [],
+      closing: `${platformLabel} isn't connected to this workspace yet, so I can't build that automation. Connect a ${platformLabel} account first, or tell me what you'd like to do on **${currentAccountName ?? "the selected Meta account"}** instead.`,
+      meta: { problemCategory: "unsupported_platform" },
+    };
+  }
+
+  return {
+    title: "Platform mismatch",
+    beats: [
+      {
+        toolCalls: [
+          builderTool(
+            "ask-platform-mismatch",
+            "ask_user",
+            {
+              kind: "choice",
+              question: `"${platformLabel}" isn't the selected account's platform. Pick a connected ${platformLabel} account to continue:`,
+              options: matches.map((account) => ({
+                id: account.accountId,
+                label: account.accountName,
+                description: `${platformLabel} · ${account.accountId}`,
+              })),
+            },
+            "Waiting on a platform/account choice",
+          ),
+        ],
+      },
+    ],
+    closing: `**${currentAccountName ?? "The selected account"}** is a Meta account, but this request is for ${platformLabel} ads — Meta can't run that action. Pick a connected ${platformLabel} account above and I'll build it there instead of silently building a Meta action and calling it ${platformLabel}.`,
+    meta: { problemCategory: "unsupported_platform", askedQuestion: true },
   };
 }
 
@@ -225,12 +394,21 @@ function fallbackTurn(): Omit<MockTurn, "conversationId"> {
 
 /** True when the message is asking to stop or slow down bad ads. */
 function wantsPause(message: string): boolean {
-  return /\b(pause|stop|turn off|kill|losing|underperform|bad|waste)\b/i.test(message);
+  return /\b(pause|stop|turn off|switch off|kill|losing|underperform|bad|waste|rejected|disapproved)\b/i.test(message);
 }
 
 /** True when the message is asking to put more money behind good ads. */
 function wantsScale(message: string): boolean {
   return /\b(scale|increase|raise|boost|winner|best|top perform)\b/i.test(message);
+}
+
+/** True when the message describes a Sheets-driven schedule with explicit days/time (C02). */
+function wantsSheetsSchedule(message: string): boolean {
+  const lower = message.toLowerCase();
+  const mentionsSheet = /\bsheet(s)?\b/.test(lower);
+  const mentionsDay = /\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/.test(lower);
+  const mentionsTime = /\b\d{1,2}\s*(am|pm)\b/.test(lower);
+  return mentionsSheet && mentionsDay && mentionsTime;
 }
 
 /**
@@ -242,9 +420,40 @@ function wantsScale(message: string): boolean {
 export function buildMockTurn(request: MockTurnRequest): MockTurn {
   const message = request.message ?? "";
   const conversationId = request.conversationId ?? "mock-conversation";
+  const currentPlatform = resolveCurrentPlatform(request.adAccountId, request.accountPlatform);
+
+  // C06 fix: the customer just answered the platform-mismatch picker — build on
+  // the account they picked instead of the originally-selected (wrong) one.
+  const picked = pickedDirectoryAccount(message);
+  if (picked) {
+    const turn = {
+      ...pauseTurn("pause ads", picked.accountId, picked.accountName, picked.platform),
+      meta: { problemCategory: "unsupported_platform" as const },
+    };
+    return { conversationId, ...turn };
+  }
+
+  const requestedPlatform = resolveRequestedPlatform(message);
+  if (requestedPlatform && requestedPlatform !== currentPlatform && (wantsPause(message) || wantsScale(message))) {
+    return { conversationId, ...platformMismatchTurn(requestedPlatform, request.accountName) };
+  }
+
+  if (wantsSheetsSchedule(message)) {
+    return { conversationId, ...sheetsScheduleTurn() };
+  }
+
+  // C01 repro: a confirmation-only reply re-runs the same build and repeats the
+  // same closing text, rather than recognizing the draft is already there.
+  if (isConfirmationOnly(message)) {
+    const turn = {
+      ...pauseTurn("pause rejected ads", request.adAccountId, request.accountName, currentPlatform),
+      meta: { problemCategory: "repeated_confirmation" as const },
+    };
+    return { conversationId, ...turn };
+  }
 
   const turn = wantsPause(message)
-    ? pauseTurn(message, request.adAccountId, request.accountName)
+    ? pauseTurn(message, request.adAccountId, request.accountName, currentPlatform)
     : wantsScale(message)
       ? scaleTurn(message, request.adAccountId, request.accountName)
       : fallbackTurn();

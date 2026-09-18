@@ -9,7 +9,8 @@
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "eval": "vitest run evals/run.eval.test.ts --reporter=default --reporter=json --outputFile=evals/results/latest.json"
   },
   "dependencies": {
     "@radix-ui/react-alert-dialog": "^1.1.23",

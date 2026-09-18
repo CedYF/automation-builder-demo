@@ -158,7 +158,9 @@ export type ChatStreamEvent =
   | { readonly type: "pending_tool"; readonly toolCall: ToolCallRecord }
   | { readonly type: "text"; readonly text: string }
   | { readonly type: "error"; readonly message: string; readonly debug?: ChatErrorDebugInfo }
-  | { readonly type: "done" };
+  | { readonly type: "done" }
+  /** Telemetry-only sideband (mock automation assistant): never rendered, used to tag the turn's problem category. */
+  | { readonly type: "turn_meta"; readonly problemCategory?: string; readonly askedQuestion?: boolean };
 
 /** The single `error` variant of a stream event — a failed assistant turn. */
 export type ChatErrorStreamEvent = Extract<ChatStreamEvent, { readonly type: "error" }>;
