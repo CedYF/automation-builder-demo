@@ -4,7 +4,7 @@ Customers describe an automation to "Ada", review the flow she drafts, then save
 
 ## What to hand in
 
-Three things, 3 to 4 hours. A polished partial result beats a sprawling one.
+Two things, 3 to 4 hours. A polished partial result beats a sprawling one.
 
 1. **A clearer builder screen.** After Ada builds something, a customer can see in one glance:
    - what it does, in one plain sentence (e.g. "When a new comment on Demo Store is negative, hide it")
@@ -14,7 +14,8 @@ Three things, 3 to 4 hours. A polished partial result beats a sprawling one.
    - where customers drop off (prompt → draft → save → activate)
    - the top failures, counted by customers affected
    - one line: "fix this next, because…"
-3. **A short write-up** (half a page) with before/after screenshots: what you changed, what you left out, and why.
+
+No write-up needed. We will look at the running app.
 
 Everything else in this file is background.
 
@@ -63,7 +64,6 @@ From our real customer channel, anonymized. Four or more customers asked "explai
 | Dashboard | The next thing to fix is obvious, and retries are not double counted. |
 | Honesty | Simulated data is never presented as something that really happened. |
 | Engineering | Typed, small, follows the repo's style, still builds offline. |
-| Judgment | A clear priority, and what you left out and why. |
 
 ## Out of scope
 
