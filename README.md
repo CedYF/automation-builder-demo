@@ -44,9 +44,25 @@ Two saved automations are seeded too: **Hide negative comments** (active) and **
 
 Server state for scenarios 2 to 5 is per conversation and resets with the dev server. The responder is `lib/mock/assistant-script.ts`; the stream and the dropped connection are in `app/api/automation-assistant/stream/route.ts`.
 
-### Screenshots
+### Baseline screenshots
 
-Before/after screenshots are part of your submission. This repo's starter ships **without** baseline screenshots: the tooling used to prepare it could view pages but could not save image files. Capture your own for scenarios 1, 3 and 4 before you change anything, save them under `docs/screenshots/`, and reference them from your write-up.
+Captured from this repo before any change (1440x1000, mock data).
+
+**1. Unclear completed build.** The header says *Unsaved draft*, the toggle is off, and Ada says the automation "is live".
+
+![Unclear completed build](docs/screenshots/01-unclear-completed-build.png)
+
+**3. Silent platform mismatch.** Asked for Pinterest, the flow is a Meta pause and the reply says "Pinterest ads".
+
+![Silent platform mismatch](docs/screenshots/02-silent-platform-mismatch.png)
+
+**4. Duplicate summary after retry.** The dropped connection is retried and the final summary is printed twice.
+
+![Duplicate summary after retry](docs/screenshots/03-duplicate-summary-after-retry.png)
+
+The seeded automations list: [docs/screenshots/00-automations-list.png](docs/screenshots/00-automations-list.png).
+
+Add your own **after** screenshots next to these under `docs/screenshots/` and reference them from your write-up.
 
 ## Part 1: make it clear what was built
 
