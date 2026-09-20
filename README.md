@@ -2,18 +2,18 @@
 
 Customers describe an automation to "Ada", review the flow she drafts, then save and turn it on. This repo is a copy of that experience on mock data. It runs offline: no accounts, no keys, no network calls.
 
-## What to hand in
+## What to do
 
-Two things, 3 to 4 hours. A polished partial result beats a sprawling one.
+About 2 hours.
 
-1. **A clearer builder screen.** After Ada builds something, a customer can see in one glance:
-   - what it does, in one plain sentence (e.g. "When a new comment on Demo Store is negative, hide it")
-   - what state it is in: draft, saved or on
-   - what to do next, if anything is wrong
-2. **A small health dashboard.** One page, reading `fixtures/axiom-events.ndjson`, that shows:
-   - where customers drop off (prompt → draft → save → activate)
-   - the top failures, counted by customers affected
-   - one line: "fix this next, because…"
+**Main point: improve the UI so the customer knows exactly what is going to happen in agent mode.**
+
+When Ada builds an automation, the customer should see at a glance:
+- what it will do, in one plain sentence (e.g. "When a new comment on Demo Store is negative, hide it")
+- what state it is in: draft, saved or on
+- what to do next, if anything is wrong
+
+**If you have time left:** a small dashboard page reading `fixtures/axiom-events.ndjson` that shows where customers drop off, the top failures counted by customers affected, and one line: "fix this next, because…".
 
 No write-up needed. We will look at the running app.
 
