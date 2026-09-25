@@ -3,7 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
-import { Files, Zap } from "lucide-react";
+import { BarChart3, Files, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /**
@@ -31,6 +31,7 @@ interface DetailNavItem {
 const AUTOMATE_NAV_ITEMS: readonly DetailNavItem[] = [
   { title: "Automations", url: "/automation", icon: Zap },
   { title: "Templates", url: "/automation?tab=templates&view=table", icon: Files, activeTab: "templates" },
+  { title: "Admin analytics", url: "/automation/admin", icon: BarChart3 },
 ];
 
 /** True when the item matches the current path and tab. */
@@ -39,7 +40,8 @@ function useIsActive(item: DetailNavItem): boolean {
   const searchParams = useSearchParams();
   const tab = searchParams?.get("tab");
 
-  if (!pathname?.startsWith("/automation")) return false;
+  if (item.url === "/automation/admin") return pathname === "/automation/admin";
+  if (pathname !== "/automation") return false;
   return item.activeTab === undefined ? tab !== "templates" : tab === item.activeTab;
 }
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import { ArrowUpRight, CheckCircle2, CircleAlert, Pencil, RotateCcw } from "lucide-react";
+import { ArrowUpRight, CheckCircle2, CircleAlert, ChevronDown, Pencil, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { AutomationFlow } from "../contexts/automation-context";
 import { listCanvasOpenSlots } from "../lib/canvas-open-slots";
@@ -33,21 +33,49 @@ export function AssistantDraftSummary({ flow, busy, canUndo, onUndo, onOpenStep 
       </div>
     ) : null;
 
+  const triggerPageIds = flow.nodes[0].config?.pageIds;
+  const pageCount = Array.isArray(triggerPageIds) ? triggerPageIds.length : 0;
+  const triggerScope = pageCount
+    ? `${pageCount} ${pageCount === 1 ? "page" : "pages"}`
+    : getNodeSummary(flow.nodes[0]).scopeSummary;
+
   return (
-    <section aria-label="Your automation draft" className="border-b bg-muted/20 px-4 py-3">
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Your automation</p>
-          <p className="break-words text-sm font-semibold">{flow.name}</p>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            {flow.selectedAccountName || (flow.selectedAccountId ? "Selected account" : "Account not selected")}
-          </p>
+    <section aria-label="Your automation draft" className="border-b bg-background px-4 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex min-w-0 items-start gap-2.5">
+          <span className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${missingCount ? "bg-amber-50 text-amber-700" : "bg-emerald-50 text-emerald-700"}`}>
+            {missingCount ? <CircleAlert className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4" />}
+          </span>
+          <div className="min-w-0">
+            <p className="text-sm font-semibold">{missingCount ? "Needs setup" : "Ready to review"}</p>
+            <p className="text-xs text-muted-foreground">
+              {flow.nodes.length} {flow.nodes.length === 1 ? "step" : "steps"}
+              {triggerScope ? ` · ${triggerScope}` : ""}
+            </p>
+          </div>
         </div>
-        <span className="shrink-0 rounded-full border bg-background px-2 py-0.5 text-[11px]">Draft changes</span>
+        {onOpenStep && (
+          <Button
+            type="button"
+            size="sm"
+            variant={missingCount ? "outline" : "default"}
+            disabled={busy}
+            className="h-8 gap-1.5 text-xs"
+            onClick={() => onOpenStep(firstGap || flow.nodes[0].id, missingCount ? "setup" : "preview")}
+          >
+            {missingCount ? "Finish setup" : "Preview matches"}
+            <ArrowUpRight className="h-3.5 w-3.5" />
+          </Button>
+        )}
       </div>
-      <details className="mt-2">
-        <summary className="cursor-pointer text-xs font-medium">
-          {flow.nodes.length} steps · {missingCount ? `${missingCount} setup items remaining` : "Ready for preview"}
+      {missingCount > 0 && (
+        <p className="mt-2 pl-9 text-xs text-amber-700 dark:text-amber-400">
+          Add {gaps.steps.flatMap((step) => step.slots.map((slot) => slot.label)).slice(0, 3).join(", ") || (gaps.isTriggerMissing ? "a trigger" : "an action")} to continue.
+        </p>
+      )}
+      <details className="group mt-2 pl-9">
+        <summary className="flex cursor-pointer list-none items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground [&::-webkit-details-marker]:hidden">
+          Review steps <ChevronDown className="h-3 w-3 transition-transform group-open:rotate-180" />
         </summary>
         <div className="mt-2 max-h-52 space-y-2 overflow-y-auto">
           {flow.nodes.map((node, index) => {
@@ -113,31 +141,8 @@ export function AssistantDraftSummary({ flow, busy, canUndo, onUndo, onOpenStep 
           )}
         </div>
       </details>
-      {missingCount > 0 && (
-        <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">
-          Needs setup:{" "}
-          {gaps.steps
-            .flatMap((step) => step.slots.map((slot) => slot.label))
-            .slice(0, 3)
-            .join(", ") || (gaps.isTriggerMissing ? "Trigger" : "Action")}
-        </p>
-      )}
-      <div className="mt-2 flex flex-wrap gap-2">
-        {onOpenStep && (
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            disabled={busy}
-            className="h-7 gap-1 text-xs"
-            onClick={() => onOpenStep(firstGap || flow.nodes[0].id, missingCount ? "setup" : "preview")}
-          >
-            {missingCount ? <Pencil className="h-3 w-3" /> : <CheckCircle2 className="h-3 w-3" />}
-            {missingCount ? "Finish setup" : "Preview matches"}
-            <ArrowUpRight className="h-3 w-3" />
-          </Button>
-        )}
-        {canUndo && (
+      {canUndo && (
+        <div className="mt-2 pl-9">
           <Button
             type="button"
             size="sm"
@@ -149,11 +154,8 @@ export function AssistantDraftSummary({ flow, busy, canUndo, onUndo, onOpenStep 
             <RotateCcw className="h-3 w-3" />
             Undo draft changes
           </Button>
-        )}
-      </div>
-      <p className="mt-2 text-[11px] text-muted-foreground">
-        Preview checks the draft. Saving and enabling are separate actions.
-      </p>
+        </div>
+      )}
     </section>
   );
 }

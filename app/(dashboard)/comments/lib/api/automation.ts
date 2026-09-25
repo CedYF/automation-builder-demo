@@ -79,6 +79,8 @@ export interface AutomationConditions {
   intents?: CommentIntent[];
   /** Ids of the workspace's custom intents (see {@link CustomIntent}). */
   customIntents?: string[];
+  /** Brand stance is judged independently of a comment's sentiment. */
+  brandStances?: Array<"undermining" | "critical" | "supportive" | "neutral" | "off_topic">;
   keywords?: string[];
   excludeKeywords?: string[];
   authorIds?: string[];
@@ -96,6 +98,8 @@ export interface AutomationConditions {
 }
 
 export interface AutomationActionConfig {
+  /** Used only by the demo's simulated Google Sheet export. */
+  sheetName?: string;
   replyTemplate?: string;
   useAI?: boolean;
   aiPrompt?: string;
@@ -113,7 +117,7 @@ export type CommentPlatform = "facebook" | "instagram";
  * `AUTOMATION_ACTION_TYPES` list; every action-keyed map in the UI derives its
  * keys from this union so a new action cannot be silently unhandled.
  */
-export type CommentActionType = "hide" | "delete" | "reply" | "like";
+export type CommentActionType = "hide" | "delete" | "reply" | "like" | "export_sheet";
 
 export interface AutomationRule {
   id: number;

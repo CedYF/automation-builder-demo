@@ -18,6 +18,7 @@ export {
 } from "./generic-service-configs";
 export { ApplyRuleConfig } from "./apply-rule-config";
 export { WebhookConfig } from "./webhook-config";
+export { CommentsTriggerConfig, CommentsActionConfig } from "./comments-demo-config";
 
 // ---------------------------------------------------------------------------
 // Stubbed. Each names the real file so the shape of the page stays legible.
@@ -103,8 +104,6 @@ export const PerformanceMonitoringConfig = createNotPortedConfig(
   "PerformanceMonitoringConfig",
   `${S}/performance-monitoring-config.tsx`,
 );
-export const CommentsTriggerConfig = createNotPortedConfig("CommentsTriggerConfig", `${S}/comments-trigger-config.tsx`);
-export const CommentsActionConfig = createNotPortedConfig("CommentsActionConfig", `${S}/comments-action-config.tsx`);
 export const TikTokPerformanceThresholdConfig = createNotPortedConfig(
   "TikTokPerformanceThresholdConfig",
   `${S}/tiktok-performance-threshold-config.tsx`,

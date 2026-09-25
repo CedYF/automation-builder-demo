@@ -48,6 +48,7 @@ export function AssistantLiveActivity({ message, busy }: { message?: AssistantMe
   const failed = message.outcome === "failed" || message.toolCalls.some((call) => call.status === "error");
   const cancelled = message.outcome === "cancelled";
   const asking = message.toolCalls.some((call) => call.name === "ask_user" && call.status === "done");
+  if (!busy && !failed && !cancelled && !asking) return null;
   const complete = message.toolCalls.filter((call) => call.status === "done").length;
   const label = busy
     ? running

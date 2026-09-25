@@ -580,6 +580,7 @@ export function FlowBuilder({
         showAgentTab
         agentContent={
           <AssistantPanel
+            embeddedInDock
             onOpenStep={(id, tab) => {
               const node = flow.nodes.find((candidate) => candidate.id === id);
               if (!node) return;

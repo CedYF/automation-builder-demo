@@ -1,4 +1,6 @@
 import { AUTOMATION_BUILDER_TOOLS } from "@/app/(dashboard)/automation/lib/assistant-canvas";
+import type { AutomationCanvasDraftSnapshot } from "@/lib/chat/automation-canvas-context";
+import { DEMO_COMMENT_PAGES } from "./comment-pages";
 import type { ToolCallRecord } from "@/lib/chat/types";
 
 /**
@@ -20,6 +22,7 @@ export interface MockTurnRequest {
   readonly accountName?: string;
   readonly accountPlatform?: string;
   readonly mode?: "suggest" | "build";
+  readonly canvasDraft?: AutomationCanvasDraftSnapshot;
 }
 
 /** Metadata the scripted turn wants surfaced on the response for telemetry — never rendered raw. */
@@ -392,6 +395,129 @@ function fallbackTurn(): Omit<MockTurn, "conversationId"> {
   };
 }
 
+/** Discover demo pages and ask for their scope before editing the seeded template. */
+function commentTemplateTurn(): Omit<MockTurn, "conversationId"> {
+  return {
+    title: "Set up auto-hide negative comments",
+    beats: [
+      {
+        text: "I found the **New Comment → Hide Comment** template. I’ll check the available pages before setting its scope.",
+        toolCalls: [
+          builderTool(
+            "comment-find-pages",
+            "list_pages",
+            { platform: "facebook,instagram" },
+            `Found ${DEMO_COMMENT_PAGES.length} connected demo pages`,
+          ),
+        ],
+      },
+      {
+        text: `I found **${DEMO_COMMENT_PAGES.length} connected demo pages**. Which ones should this automation watch? I’ll wait for your choice before adding any pages.`,
+        toolCalls: [
+          builderTool(
+            "comment-confirm-pages",
+            "ask_user",
+            {
+              kind: "choice",
+              question: "Which pages should Auto-hide negative comments watch?",
+              options: [
+                { id: "all", label: "All three pages", description: "UK Facebook, UK Instagram, and US Facebook" },
+                { id: "uk-facebook", label: "UK Facebook", description: "Northwind Coffee — UK" },
+                { id: "uk-instagram", label: "UK Instagram", description: "Northwind Coffee — UK" },
+                { id: "us-facebook", label: "US Facebook", description: "Northwind Coffee — US" },
+              ],
+            },
+            "Waiting for your page choice",
+          ),
+        ],
+      },
+    ],
+    closing: "**Suggested setup**\n\n1. Confirm the Facebook and Instagram pages to watch below.\n2. Use negative tone, brand-undermining comments, and hostile pile-ons as the starting checks. You can adjust them in the trigger.\n3. Preview the mock matches before saving and turning it on.\n\n**No pages have been added yet.**",
+    meta: { problemCategory: "none", askedQuestion: true },
+  };
+}
+
+function chosenCommentPages(message: string) {
+  const lower = message.toLowerCase();
+  if (/\b(all|every)\s+(three|3|pages)\b/.test(lower)) return [...DEMO_COMMENT_PAGES];
+  const wantsInstagram = /\b(instagram|ig)\b/.test(lower);
+  const wantsFacebook = /\b(facebook|fb)\b/.test(lower);
+  const wantsUK = /\b(uk|united kingdom)\b/.test(lower);
+  const wantsUS = /\b(us|usa|united states)\b/.test(lower);
+  return DEMO_COMMENT_PAGES.filter((page) =>
+    (page.id === "demo-page-1" && wantsUK && wantsFacebook) ||
+    (page.id === "demo-ig-1" && wantsUK && wantsInstagram) ||
+    (page.id === "demo-page-2" && wantsUS && wantsFacebook),
+  );
+}
+
+function commentPagesTurn(message: string): Omit<MockTurn, "conversationId"> {
+  const pages = chosenCommentPages(message);
+  if (pages.length === 0) {
+    return {
+      title: "Choose pages",
+      beats: [],
+      closing: "Please name the demo pages to watch, such as **UK Facebook**, **UK Instagram**, **US Facebook**, or **all three**. I’ll add them to the draft.",
+      meta: { problemCategory: "none", askedQuestion: true },
+    };
+  }
+  const names = pages.map((page) => `${page.name} (${page.platform})`);
+  return {
+    title: "Set comment pages",
+    beats: [
+      {
+        text: `Confirmed: watch new comments on **${names.join("**, **")}**. I’m adding only those pages.`,
+        toolCalls: [builderTool(
+          "comment-pages",
+          AUTOMATION_BUILDER_TOOLS.UPDATE,
+          {
+            stepId: "trigger-1",
+            config: {
+              pageIds: pages.map((page) => page.id),
+              pagePlatforms: Object.fromEntries(pages.map((page) => [page.id, page.platform])),
+              pageNames: Object.fromEntries(pages.map((page) => [page.id, page.name])),
+              platform: pages[0].platform,
+            },
+          },
+          `Selected ${pages.length} demo page${pages.length === 1 ? "" : "s"}`,
+        )],
+      },
+      {
+        text: "I’ll match **negative tone**, **brand-undermining comments**, or **hostile pile-ons** and keep the action set to **Hide Comment**.",
+        toolCalls: [
+          builderTool(
+            "comment-trigger",
+            AUTOMATION_BUILDER_TOOLS.UPDATE,
+            {
+              stepId: "trigger-1",
+              type: "trigger",
+              service: "comments",
+              event: "New Comment",
+              config: {
+                conditions: {
+                  matchMode: "any",
+                  sentimentMax: 40,
+                  brandStances: ["undermining"],
+                  customIntents: ["custom-comment-scan"],
+                },
+                toneValue: { mode: "preset", preset: "negative" },
+              },
+            },
+            "Configured the three matching checks",
+          ),
+          builderTool(
+            "comment-action",
+            AUTOMATION_BUILDER_TOOLS.UPDATE,
+            { stepId: "action-1", type: "action", service: "comments", event: "Hide Comment", config: { actionConfig: {} } },
+            "Confirmed the hide action",
+          ),
+        ],
+      },
+    ],
+    closing: "The draft now watches only the pages you confirmed. Next, **preview the mock matches**, adjust tone or meaning scan if needed, then **Save** and turn it on when you’re ready. No live comments are changed in this demo.",
+  };
+}
+
 /** True when the message is asking to stop or slow down bad ads. */
 function wantsPause(message: string): boolean {
   return /\b(pause|stop|turn off|switch off|kill|losing|underperform|bad|waste|rejected|disapproved)\b/i.test(message);
@@ -421,6 +547,20 @@ export function buildMockTurn(request: MockTurnRequest): MockTurn {
   const message = request.message ?? "";
   const conversationId = request.conversationId ?? "mock-conversation";
   const currentPlatform = resolveCurrentPlatform(request.adAccountId, request.accountPlatform);
+
+  const isCommentDraft = request.canvasDraft?.name === "Auto-hide negative comments" &&
+    request.canvasDraft.steps.some((step) => step.service === "comments" && step.type === "trigger");
+  if (isCommentDraft && chosenCommentPages(message).length > 0) {
+    return { conversationId, ...commentPagesTurn(message) };
+  }
+
+  if (/auto.?hide negative comments|hide negative comments/i.test(message)) {
+    return { conversationId, ...commentTemplateTurn() };
+  }
+
+  if (isCommentDraft) {
+    return { conversationId, ...commentPagesTurn(message) };
+  }
 
   // C06 fix: the customer just answered the platform-mismatch picker — build on
   // the account they picked instead of the originally-selected (wrong) one.

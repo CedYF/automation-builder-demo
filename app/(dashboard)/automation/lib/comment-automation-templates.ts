@@ -16,6 +16,7 @@ import {
 } from "./comment-flow-mapper";
 
 export const COMMENT_TEMPLATE_CATEGORY = "comments" as const;
+export const HIDE_NEGATIVE_COMMENTS_TEMPLATE_ID = "template-comment-auto-hide-negative";
 
 const RECIPE_EMOJI_BY_ID: Readonly<Record<string, string>> = {
   "thank-kind": "❤️",

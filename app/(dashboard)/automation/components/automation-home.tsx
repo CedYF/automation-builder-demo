@@ -4,10 +4,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import type { AutomationHomeRow } from "@/lib/automation/home-summary";
 import { buildAutomationHistoryHref } from "@/lib/automation/home-automation-actions";
-import type { AssistantMode } from "../hooks/use-automation-assistant";
 import { useAutomationHome } from "../hooks/use-automation-home";
 import { HOME_SHELL_ROOT_CLASS } from "../lib/home-shell-layout";
-import { canManageAutomationsForScope, resolveAutomationAccessScope } from "@/lib/automation/automation-access";
+import { canManageAutomationsForScope } from "@/lib/automation/automation-access";
 import { useUser } from "@/lib/providers/user-provider";
 import { COMMENT_AUTOMATION_SOURCE } from "../lib/map-comment-automation-to-table-row";
 import { ApprovalReviewDialog, type PendingApproval } from "./approval-review-dialog";
@@ -20,7 +19,6 @@ import type { AutomationHomeRowMenuHandlers } from "./automation-home-row-action
 
 export interface AutomationHomeProps {
   readonly onOpenAutomation: (id: number | string) => void;
-  readonly onSubmitGoal: (goal: string, mode?: AssistantMode) => void;
   readonly onBrowseTemplates: () => void;
   /** Reports live counts up to the page header. */
   readonly onCountsChange?: (counts: {
@@ -32,18 +30,15 @@ export interface AutomationHomeProps {
 
 /**
  * The Automate home: a stats strip and the list of automations. New users get
- * the chat-first empty state. Create (header) is where returning users start
- * a new flow — this view stays list-only so the two jobs do not compete.
+ * a template-first empty state when there are no automations.
  */
 export function AutomationHome({
   onOpenAutomation,
-  onSubmitGoal,
   onBrowseTemplates,
   onCountsChange,
 }: AutomationHomeProps): React.ReactElement {
   const { extendedUser } = useUser();
   const role = extendedUser?.role;
-  const isCommentsOnly = resolveAutomationAccessScope(role) === "comments-only";
   const {
     rows,
     counts,
@@ -170,11 +165,7 @@ export function AutomationHome({
 
   if (!loading && rows.length === 0 && !error) {
     return (
-      <AutomationHomeEmpty
-        onSubmitGoal={onSubmitGoal}
-        onBrowseTemplates={onBrowseTemplates}
-        commentsOnly={isCommentsOnly}
-      />
+      <AutomationHomeEmpty onBrowseTemplates={onBrowseTemplates} />
     );
   }
 

@@ -7,28 +7,22 @@ import type { AutomationAccessScope } from "@/lib/automation/automation-access";
  */
 export const AUTOMATION_TABS = [
   { value: "automations", label: "Home" },
-  { value: "chat", label: "Chat" },
   { value: "templates", label: "Templates" },
-  { value: "queue", label: "Queue" },
   { value: "history", label: "History" },
-  { value: "notifications", label: "Notifications" },
 ] as const;
 
 export type AutomationTabValue = (typeof AUTOMATION_TABS)[number]["value"];
 export type AutomationTab = (typeof AUTOMATION_TABS)[number];
 
-export const AUTOMATION_TAB_CHAT: AutomationTabValue = "chat";
 export const AUTOMATION_TAB_HOME: AutomationTabValue = "automations";
 
 /**
- * Tabs a comment-only role can use (ADM-11300). Chat builds flow automations
- * through the assistant and History lists flow executions, so neither has
- * anything to show a role that only reaches comment automations.
+ * Tabs a comment-only role can use (ADM-11300). History lists flow
+ * executions, so it has nothing to show a comment-only role.
  */
 const COMMENTS_ONLY_TAB_VALUES: ReadonlySet<AutomationTabValue> = new Set<AutomationTabValue>([
   "automations",
   "templates",
-  "notifications",
 ]);
 
 /**
@@ -50,7 +44,12 @@ export function listAutomationTabsForScope(scope: AutomationAccessScope): readon
  * cannot use.
  */
 export function resolveAutomationTabForScope(tab: string, scope: AutomationAccessScope): string {
-  if (scope !== "comments-only") return tab;
-  const isVisibleTab = COMMENTS_ONLY_TAB_VALUES.has(tab as AutomationTabValue);
-  return isVisibleTab || COMMENTS_ONLY_SECONDARY_TAB_VALUES.has(tab) ? tab : AUTOMATION_TAB_HOME;
+  const isVisibleTab = AUTOMATION_TABS.some((candidate) => candidate.value === tab);
+  if (scope !== "comments-only") {
+    return isVisibleTab || ["all", "approvals", "active"].includes(tab) ? tab : AUTOMATION_TAB_HOME;
+  }
+  return (isVisibleTab && COMMENTS_ONLY_TAB_VALUES.has(tab as AutomationTabValue)) ||
+    COMMENTS_ONLY_SECONDARY_TAB_VALUES.has(tab)
+    ? tab
+    : AUTOMATION_TAB_HOME;
 }

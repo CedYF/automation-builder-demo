@@ -14,12 +14,12 @@ import {
   type AutomationTemplate,
   type TemplateCategory,
 } from "../lib/automation-templates";
-import { isCommentAutomationTemplate } from "../lib/comment-automation-templates";
+import { HIDE_NEGATIVE_COMMENTS_TEMPLATE_ID, isCommentAutomationTemplate } from "../lib/comment-automation-templates";
 import { remapNodeIdPills } from "../lib/remap-node-id-pills";
 import { ServiceIcon } from "../lib/service-icons";
 import { useIsEssentialAutomationPlan } from "@/lib/automation/use-essential-automation-plan";
 import { getEssentialPlanAutomationBlockReason } from "@/lib/automation/essential-plan-automation-access";
-import { canManageAutomationBySource, resolveAutomationAccessScope } from "@/lib/automation/automation-access";
+import { canManageAutomationBySource } from "@/lib/automation/automation-access";
 import { useUser } from "@/lib/providers/user-provider";
 import type { AutomationNode } from "../contexts/automation-context";
 
@@ -41,37 +41,22 @@ const categoryColors: Record<TemplateCategory, string> = {
   comments: "bg-sky-100 text-sky-700",
 };
 
-const PINNED_TEMPLATE_IDS = new Set(["template-hunch-style-sheet-template-ads"]);
-
 export function AutomationTemplatesContent({ onUseTemplate, searchQuery = "" }: AutomationTemplatesContentProps) {
-  const [selectedCategory, setSelectedCategory] = useState<TemplateCategory | "all">("all");
   const [creatingTemplateId, setCreatingTemplateId] = useState<string | null>(null);
   const isEssentialPlan = useIsEssentialAutomationPlan();
   const { extendedUser } = useUser();
-  // Comment-only roles (ADM-11300) see the comment recipes alone: every other
-  // card would be locked, and the category pills would only point at locks.
-  const isCommentsOnly = resolveAutomationAccessScope(extendedUser?.role) === "comments-only";
-  const offeredTemplates = isCommentsOnly
-    ? AUTOMATION_TEMPLATES.filter(isCommentAutomationTemplate)
-    : AUTOMATION_TEMPLATES;
+  const offeredTemplates = AUTOMATION_TEMPLATES.filter((template) => template.id === HIDE_NEGATIVE_COMMENTS_TEMPLATE_ID);
   const canUseTemplate = (template: AutomationTemplate): boolean =>
     canManageAutomationBySource(extendedUser?.role, isCommentAutomationTemplate(template) ? "comment" : "flow");
 
-  const categoryFiltered =
-    selectedCategory === "all" || isCommentsOnly
-      ? offeredTemplates
-      : offeredTemplates.filter((t) => t.category === selectedCategory);
-
   const normalizedQuery = searchQuery.trim().toLowerCase();
   const filtered = normalizedQuery
-    ? categoryFiltered.filter(
+    ? offeredTemplates.filter(
         (t) => t.name.toLowerCase().includes(normalizedQuery) || t.description.toLowerCase().includes(normalizedQuery),
       )
-    : categoryFiltered;
+    : offeredTemplates;
 
-  // Featured templates always come first; pinned operational templates follow.
-  const sorted = [...filtered].sort((a, b) => getTemplateSortRank(b) - getTemplateSortRank(a));
-  const creatingTemplate = sorted.find((template) => template.id === creatingTemplateId);
+  const creatingTemplate = filtered.find((template) => template.id === creatingTemplateId);
 
   return (
     <div className="relative flex-1 overflow-auto p-4 md:p-8">
@@ -87,38 +72,9 @@ export function AutomationTemplatesContent({ onUseTemplate, searchQuery = "" }: 
         </div>
       )}
 
-      {/* Category filter pills */}
-      <div className={cn("mb-6 flex flex-wrap items-center gap-2", isCommentsOnly && "hidden")}>
-        <button
-          onClick={() => setSelectedCategory("all")}
-          className={cn(
-            "px-3 py-1.5 text-sm font-medium rounded-full transition-colors",
-            selectedCategory === "all"
-              ? "bg-foreground text-background"
-              : "bg-muted text-muted-foreground hover:bg-muted/80",
-          )}
-        >
-          All
-        </button>
-        {TEMPLATE_CATEGORIES.map((cat) => (
-          <button
-            key={cat.value}
-            onClick={() => setSelectedCategory(cat.value)}
-            className={cn(
-              "px-3 py-1.5 text-sm font-medium rounded-full transition-colors",
-              selectedCategory === cat.value
-                ? "bg-foreground text-background"
-                : "bg-muted text-muted-foreground hover:bg-muted/80",
-            )}
-          >
-            {cat.label}
-          </button>
-        ))}
-      </div>
-
       {/* Template cards grid */}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-        {sorted.map((template) => {
+        {filtered.map((template) => {
           const canManageAutomations = canUseTemplate(template);
           const essentialBlockReason = isEssentialPlan ? getEssentialPlanAutomationBlockReason(template.flow) : null;
           const displaySteps =
@@ -256,12 +212,6 @@ export function AutomationTemplatesContent({ onUseTemplate, searchQuery = "" }: 
 
 export function AutomationTemplatesTab({ onUseTemplate, searchQuery }: AutomationTemplatesTabProps) {
   return <AutomationTemplatesContent onUseTemplate={onUseTemplate} searchQuery={searchQuery} />;
-}
-
-function getTemplateSortRank(template: AutomationTemplate): number {
-  if (template.featured) return 3;
-  if (PINNED_TEMPLATE_IDS.has(template.id)) return 2;
-  return 1;
 }
 
 async function createAutomationFromTemplate(template: AutomationTemplate, extendedUser: unknown): Promise<number> {

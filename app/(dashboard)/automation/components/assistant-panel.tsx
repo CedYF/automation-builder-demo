@@ -62,6 +62,7 @@ const MCP_TOOL_LABELS: Record<string, string> = {
   automation_add_step: "Add step",
   automation_update_step: "Update step",
   automation_remove_step: "Remove step",
+  list_pages: "Find connected pages",
   create_automation: "Draft automation flow",
   scan_account_insights: "Scan account for suggestions",
   preview_performance_threshold: "Preview matched ads",
@@ -102,6 +103,7 @@ const ASSISTANT_MARKDOWN_COMPONENTS: Components = {
 
 interface AssistantPanelProps {
   readonly onClose: () => void;
+  readonly embeddedInDock?: boolean;
   readonly onOpenStep?: (id: string, tab: "setup" | "preview") => void;
   /** Optional goal seeded from the home hero — auto-sent once on open. */
   readonly seedPrompt?: string | null;
@@ -115,6 +117,7 @@ interface AssistantPanelProps {
 
 export function AssistantPanel({
   onClose,
+  embeddedInDock = false,
   onOpenStep,
   seedPrompt,
   seedMode = "build",
@@ -142,6 +145,7 @@ export function AssistantPanel({
   const [hasNewActivity, setHasNewActivity] = useState(false);
   const [queuedMessage, setQueuedMessage] = useState<string | null>(null);
   const pendingUndoRef = useRef<{ before: AutomationFlow; version: number } | null>(null);
+  const seededPromptRef = useRef<string | null>(null);
   const [undo, setUndo] = useState<{ before: AutomationFlow; after: string; version: number } | null>(null);
   const canUndo = Boolean(undo && undo.version === draftEditVersion && undo.after === JSON.stringify(flow));
 
@@ -240,6 +244,7 @@ export function AssistantPanel({
       // otherwise abort the first stream while leaving the seed marked consumed.
       const timer = setTimeout(() => {
         seededRef.current = true;
+        seededPromptRef.current = seedPrompt.trim();
         void sendMessage(seedPrompt, seedMode);
         onSeedConsumed?.();
       }, 0);
@@ -286,17 +291,15 @@ export function AssistantPanel({
 
   return (
     <div className="flex h-full flex-col bg-card">
-      {/* The dock's own tab strip (builder-dock.tsx) already labels this pane "Agent" with
-          the same Sparkles icon — repeating a title/subtitle block here read as a doubled
-          header. Only the panel's action buttons live in this header now. */}
-      <header className="flex items-center justify-end border-b px-4 py-3">
+      <header className="flex h-10 shrink-0 items-center justify-between border-b px-4">
+        <span className="text-xs font-medium text-muted-foreground">Conversation</span>
         <div className="flex items-center gap-1">
-          {displayMode === "normal" && onExpandPanel && (
+          {!embeddedInDock && displayMode === "normal" && onExpandPanel && (
             <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onExpandPanel} title="Expand agent panel">
               <Maximize2 className="h-4 w-4" />
             </Button>
           )}
-          {displayMode !== "minimized" && onMinimizePanel && (
+          {!embeddedInDock && displayMode !== "minimized" && onMinimizePanel && (
             <Button
               variant="ghost"
               size="icon"
@@ -322,9 +325,11 @@ export function AssistantPanel({
               <RotateCcw className="h-4 w-4" />
             </Button>
           )}
-          <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onClose} title="Dock agent">
-            <X className="h-4 w-4" />
-          </Button>
+          {!embeddedInDock && (
+            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={onClose} title="Dock agent">
+              <X className="h-4 w-4" />
+            </Button>
+          )}
         </div>
       </header>
 
@@ -389,6 +394,7 @@ export function AssistantPanel({
               <MessageRow
                 key={message.id}
                 message={message}
+                collapseSeededRequest={message.role === "user" && message.text.trim() === seededPromptRef.current}
                 isLoading={isLoading}
                 isLatest={index === messages.length - 1}
                 accountId={flow.selectedAccountId}
@@ -634,6 +640,7 @@ function toQuestionToolCall(call: AssistantToolCall): ToolCallRecord {
 
 function MessageRow({
   message,
+  collapseSeededRequest,
   isLoading,
   isLatest,
   accountId,
@@ -645,6 +652,7 @@ function MessageRow({
   onBuildSuggestion,
 }: {
   message: AssistantMessage;
+  collapseSeededRequest: boolean;
   isLoading: boolean;
   suppressSuggestionCards: boolean;
   answeredValue: string | null;
@@ -669,6 +677,14 @@ function MessageRow({
       : [];
 
   if (message.role === "user") {
+    if (collapseSeededRequest) {
+      return (
+        <details className="ml-auto max-w-[85%] rounded-xl bg-violet-50 px-3 py-2 text-xs text-violet-800">
+          <summary className="cursor-pointer font-medium">Setup request</summary>
+          <p className="mt-2 whitespace-pre-wrap break-words text-foreground">{message.text}</p>
+        </details>
+      );
+    }
     return (
       <div className="flex justify-end">
         <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-sm bg-violet-600 px-3 py-2 text-sm text-white">
@@ -839,10 +855,15 @@ function AssistantText({
 }
 
 function ToolCallCard({ toolCalls }: { toolCalls: AssistantToolCall[] }): React.ReactElement {
+  const [isOpen, setIsOpen] = useState(() => toolCalls.some((call) => call.status === "error" || call.id.startsWith("comment-")));
+  useEffect(() => {
+    if (toolCalls.some((call) => call.status === "error")) setIsOpen(true);
+  }, [toolCalls]);
   return (
     <details
       className="rounded-xl border bg-muted/20 p-2.5"
-      open={toolCalls.some((call) => call.status === "error") ? true : undefined}
+      open={isOpen}
+      onToggle={(event) => setIsOpen(event.currentTarget.open)}
     >
       <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
         Activity · {toolCalls.filter((call) => call.status === "done").length} completed

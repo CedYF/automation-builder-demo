@@ -35,6 +35,10 @@ const EFFECT_BY_EVENT: Readonly<Record<string, CommentActionEffectCopy>> = {
     headline: "We reply as your page",
     detail: "Your reply is posted publicly under the comment.",
   },
+  "Export to Google Sheet": {
+    headline: "We add it as a row to your Google Sheet",
+    detail: "Each run appends new matching comments. Nothing changes on the page.",
+  },
 };
 
 const DEFAULT_EFFECT = EFFECT_BY_EVENT["Hide Comment"]!;

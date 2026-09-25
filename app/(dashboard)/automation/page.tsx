@@ -1,33 +1,29 @@
 "use client";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FlowBuilder } from "./components/flow-builder";
 import { AutomationHeader } from "./components/automation-header";
 import { AutomationHome } from "./components/automation-home";
-import { AutomationChatTab } from "./components/automation-chat-tab";
 import { AutomationProvider } from "./contexts/automation-context";
 import { AutomationsTable } from "./components/automations-table";
 import { AutomationHistory } from "./components/automation-history";
 import { PendingApprovalsTab } from "./components/pending-approvals-tab";
 import { ActiveAutomationsTab } from "./components/active-automations-tab";
-import { YouTubeUploadQueuePanel } from "./components/youtube-upload-queue-panel";
 import { AutomationTemplatesTab } from "./components/automation-templates-tab";
-import { NotificationApprovalHistory } from "./components/notification-approval-history";
 import { RateLimitBanner } from "./components/rate-limit-banner";
 import { AutomationTrialBanner } from "./components/automation-trial-banner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { formatHomeHeaderSummary, type HomeHeaderCounts } from "./lib/home-labels";
-import { AUTOMATION_TEMPLATES } from "./lib/automation-templates";
-import { AUTOMATION_TAB_CHAT, listAutomationTabsForScope, resolveAutomationTabForScope } from "./lib/automation-tabs";
+import { listAutomationTabsForScope, resolveAutomationTabForScope } from "./lib/automation-tabs";
 import { HOME_SHELL_PADDING_CLASS, homeTabContentClass } from "./lib/home-shell-layout";
-import { CreateAutomationMenu } from "./components/create-automation-menu";
 import { CommentAutomationHistoryView } from "./_features/comment-automation";
+import { HIDE_NEGATIVE_COMMENTS_TEMPLATE_ID } from "./lib/comment-automation-templates";
 import { parseCommentAutomationId } from "@/lib/automation/editor-identity";
 import { useQueryState, parseAsString, parseAsInteger, parseAsBoolean } from "nuqs";
 import { ArrowLeft, Lock, Plus, Search } from "lucide-react";
 import { useUser } from "@/lib/providers/user-provider";
-import { resolveAutomationAccessScope } from "@/lib/automation/automation-access";
+import { canManageCommentAutomations, resolveAutomationAccessScope } from "@/lib/automation/automation-access";
 
 /**
  * Reachable from Home, but kept out of the strip so the primary tabs stay put.
@@ -53,6 +49,7 @@ export default function Home() {
   const [assistantSeed, setAssistantSeed] = useQueryState("assistantSeed", parseAsString);
   const [assistantSeedMode, setAssistantSeedMode] = useQueryState("assistantSeedMode", parseAsString);
   const [automationRuleId, setAutomationRuleId] = useQueryState("automationRuleId", parseAsInteger);
+  const autoStartedTemplateRef = useRef<string | null>(null);
   // Live totals for the page header, reported up by the Home list. The header no
   // longer polls its own counts: the Home payload already resolves every state.
   const [homeCounts, setHomeCounts] = useState<HomeHeaderCounts>(EMPTY_HOME_COUNTS);
@@ -64,7 +61,6 @@ export default function Home() {
   const { extendedUser } = useUser();
   const accessScope = resolveAutomationAccessScope(extendedUser?.role);
   const canView = accessScope !== "none";
-  const isCommentsOnly = accessScope === "comments-only";
   const visibleTabs = listAutomationTabsForScope(accessScope);
   // A deep link to a hidden tab lands on Home rather than an empty flow surface.
   const activeTab = resolveAutomationTabForScope(requestedTab, accessScope);
@@ -84,24 +80,6 @@ export default function Home() {
     setAssistantOpen(null);
     setAssistantSeed(null);
     setAssistantSeedMode(null);
-  };
-
-  // Composer submit → open a fresh builder with the assistant dock, seeded with the goal.
-  // "suggest" chips ask the assistant to scan the account and recommend automations first.
-  const handleBuildWithAi = useCallback(
-    (goal: string, mode?: "suggest" | "build") => {
-      setSelectedAutomationId("new");
-      setAssistantSeed(goal);
-      setAssistantSeedMode(mode === "suggest" ? "suggest" : null);
-      setAssistantOpen(true);
-      setView("builder");
-    },
-    [setSelectedAutomationId, setAssistantSeed, setAssistantSeedMode, setAssistantOpen, setView],
-  );
-
-  const handleCreate = () => {
-    setSelectedAutomationId("new");
-    setView("builder");
   };
 
   const goToTab = useCallback(
@@ -142,6 +120,17 @@ export default function Home() {
   // With no automation at all there is nothing to build or show: that falls
   // back to the Home table instead of an empty builder.
   const showBuilder = view === "builder" || (view === "history" && selectedAutomationId !== null);
+  useEffect(() => {
+    if (view !== "builder" || selectedAutomationId !== HIDE_NEGATIVE_COMMENTS_TEMPLATE_ID) {
+      autoStartedTemplateRef.current = null;
+      return;
+    }
+    if (autoStartedTemplateRef.current === selectedAutomationId) return;
+    autoStartedTemplateRef.current = selectedAutomationId;
+    void setAssistantOpen(true);
+    void setAssistantSeedMode("build");
+    void setAssistantSeed("Help me set up Auto-hide negative comments. Find my connected demo pages, suggest the next steps, and ask me which pages to watch before changing the draft.");
+  }, [view, selectedAutomationId, setAssistantOpen, setAssistantSeed, setAssistantSeedMode]);
 
   if (!canView) {
     return (
@@ -173,30 +162,18 @@ export default function Home() {
               <RateLimitBanner />
             </div>
 
-            {/* Page title, live state summary and the primary Create action */}
-            <div className="flex flex-wrap items-baseline justify-between gap-3 px-4 pt-4 md:px-8 md:pt-6">
+            {/* Page title and live state summary */}
+            <div className="flex flex-wrap items-center justify-between gap-3 px-4 pt-4 md:px-8 md:pt-6">
               <div className="flex flex-wrap items-baseline gap-3">
                 <h1 className="text-2xl font-bold tracking-tight text-foreground">Automate</h1>
                 <p className="text-sm text-muted-foreground">{headerSummary}</p>
               </div>
-              <div className="flex items-center gap-2">
-                {isCommentsOnly ? (
-                  // Comment automations start from a recipe (they need a page
-                  // before they can persist); the AI composer and the blank
-                  // canvas only produce flow automations this role cannot save.
-                  <Button type="button" onClick={() => goToTab("templates")} className="gap-1.5">
-                    <Plus className="h-4 w-4" />
-                    Create
-                  </Button>
-                ) : (
-                  <CreateAutomationMenu
-                    onSubmitGoal={handleBuildWithAi}
-                    onBrowseTemplates={() => goToTab("templates")}
-                    onStartBlank={handleCreate}
-                    templateCount={AUTOMATION_TEMPLATES.length}
-                  />
-                )}
-              </div>
+              {activeTab === "automations" && canManageCommentAutomations(extendedUser?.role) && (
+                <Button onClick={() => handleOpenAutomation(HIDE_NEGATIVE_COMMENTS_TEMPLATE_ID)}>
+                  <Plus className="mr-2 h-4 w-4" />
+                  Create
+                </Button>
+              )}
             </div>
 
             {/* Underlined tab strip */}
@@ -240,26 +217,12 @@ export default function Home() {
                 <div className={HOME_SHELL_PADDING_CLASS}>
                   <AutomationHome
                     onOpenAutomation={handleOpenAutomation}
-                    onSubmitGoal={handleBuildWithAi}
                     onBrowseTemplates={() => goToTab("templates")}
                     onCountsChange={setHomeCounts}
                   />
                 </div>
-              ) : activeTab === AUTOMATION_TAB_CHAT ? (
-                <div className="px-4 md:px-8">
-                  <AutomationChatTab onSubmitGoal={handleBuildWithAi} onBrowseTemplates={() => goToTab("templates")} />
-                </div>
               ) : activeTab === "templates" ? (
                 <AutomationTemplatesTab onUseTemplate={(id) => handleOpenAutomation(id)} searchQuery={templateSearch} />
-              ) : activeTab === "queue" ? (
-                <div className={HOME_SHELL_PADDING_CLASS}>
-                  <YouTubeUploadQueuePanel showEmptyState />
-                </div>
-              ) : activeTab === "notifications" ? (
-                <NotificationApprovalHistory
-                  automationRuleId={automationRuleId}
-                  onClearAutomationRuleId={() => setAutomationRuleId(null)}
-                />
               ) : secondaryTabLabel ? (
                 <div className="flex min-h-0 flex-1 flex-col">
                   <div className="px-4 pt-4 md:px-8">

@@ -163,6 +163,7 @@ export const ACTION_VERB: Record<RunActionType, string> = {
   hide: "Hide",
   delete: "Delete",
   like: "Like",
+  export_sheet: "Export",
 };
 
 // Compares a run timestamp against `now` and returns which date-bucket

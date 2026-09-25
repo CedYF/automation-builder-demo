@@ -32,6 +32,7 @@ const SUCCESS_LABEL: Readonly<Record<CommentActionType, string>> = {
   delete: "Deleted",
   like: "Liked",
   reply: "Sent",
+  export_sheet: "Exported",
 };
 
 const OUTCOME_LABEL: Readonly<Record<Exclude<RunOutcome, "success">, string>> = {

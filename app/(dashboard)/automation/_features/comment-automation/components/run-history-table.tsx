@@ -42,6 +42,7 @@ const SUCCESS_VERB: Readonly<Record<CommentActionType, string>> = {
   delete: "deleted",
   like: "liked",
   reply: "sent",
+  export_sheet: "exported",
 };
 
 interface RunHistoryTableProps {

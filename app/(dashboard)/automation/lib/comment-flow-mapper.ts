@@ -36,6 +36,7 @@ export const COMMENT_ACTION_EVENTS = {
   delete: "Delete Comment",
   reply: "Reply to Comment",
   like: "Like Comment",
+  export_sheet: "Export to Google Sheet",
 } as const;
 
 export type CommentTriggerType = keyof typeof COMMENT_TRIGGER_EVENTS;
@@ -198,6 +199,7 @@ export function actionEventToType(event: string | undefined): CommentActionType 
   if (event === COMMENT_ACTION_EVENTS.delete) return "delete";
   if (event === COMMENT_ACTION_EVENTS.reply) return "reply";
   if (event === COMMENT_ACTION_EVENTS.like) return "like";
+  if (event === COMMENT_ACTION_EVENTS.export_sheet) return "export_sheet";
   return "hide";
 }
 
@@ -372,7 +374,7 @@ export function buildCommentSavePayloadFromFlow(options: {
     triggerType,
     conditions,
     actionType,
-    actionConfig: actionType === "reply" ? actionConfig : {},
+    actionConfig: actionType === "reply" || actionType === "export_sheet" ? actionConfig : {},
     pageIds,
     groupId: typeof config.commentGroupId === "string" && config.commentGroupId ? config.commentGroupId : undefined,
     adAccountId,

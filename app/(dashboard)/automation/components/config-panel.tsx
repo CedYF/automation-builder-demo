@@ -6,7 +6,8 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
-import { X } from "lucide-react";
+import { Save, X } from "lucide-react";
+import { toast } from "sonner";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { getServiceInfo } from "../lib/service-icons";
@@ -19,6 +20,7 @@ import {
 import { useQueryState, parseAsString } from "nuqs";
 import Image from "next/image";
 import { StepPreview } from "./step-preview";
+import { DemoCommentPreview } from "./config-sections/comments-demo-config";
 import { TikTokDuplicationCompatAlert } from "./tiktok-duplication-compat-alert";
 import { PerformanceThresholdPreview } from "./performance-threshold-preview";
 import { TikTokPerformanceThresholdPreview } from "./tiktok-performance-threshold-preview";
@@ -157,7 +159,7 @@ const events = {
   },
   comments: {
     trigger: ["New Comment", "Scheduled", "Manual Run"],
-    action: ["Hide Comment", "Delete Comment", "Reply to Comment"],
+    action: ["Hide Comment", "Delete Comment", "Reply to Comment", "Like Comment", "Export to Google Sheet"],
   },
   // box: {
   //   trigger: ["New File in Folder"],
@@ -267,7 +269,7 @@ interface ConfigPanelProps {
 
 export function ConfigPanel({ node, callbacks }: ConfigPanelProps) {
   const { onClose } = callbacks;
-  const { updateNode, flow, editorIdentity } = useAutomation();
+  const { updateNode, flow, editorIdentity, saveAutomation } = useAutomation();
   const { currentWorkspace } = useUser();
   const isEssentialPlan = useIsEssentialAutomationPlan();
   const [panelTab, setPanelTab] = useQueryState("panel", parseAsString.withDefault("setup"));
@@ -281,6 +283,18 @@ export function ConfigPanel({ node, callbacks }: ConfigPanelProps) {
   // Short skeleton window while child selectors (ad accounts, campaigns) boot up,
   // so users don't see the content shift as each piece mounts.
   const [isHydrating, setIsHydrating] = useState(true);
+  const [isSavingPreview, setIsSavingPreview] = useState(false);
+
+  const saveCommentPreview = async () => {
+    setIsSavingPreview(true);
+    try {
+      const result = await saveAutomation({ mode: editorIdentity.existingRuleId !== null ? "update" : "create" });
+      if (result.ok) toast.success(`${result.name} saved`);
+      else toast.error(result.error);
+    } finally {
+      setIsSavingPreview(false);
+    }
+  };
 
   // Push local edits into flow state. Depend only on local state — not the `node`
   // prop reference — or every updateNode() would recreate the node object and
@@ -472,7 +486,18 @@ export function ConfigPanel({ node, callbacks }: ConfigPanelProps) {
           : node.type === "delay"
             ? "Delay"
             : "Approval";
-  const stepSubtitle = node.type === "trigger" ? "When does this step fire?" : "What happens when it fires?";
+  const isCommentStep = service === "comments" && Boolean(event);
+  const commentStepTitle = node.type === "trigger"
+    ? event === "Scheduled scan" ? "Scan comments on a schedule" : event === "Manual Run" ? "Run on comments manually" : "When comments match"
+    : event === "Delete Comment" ? "Delete comments"
+      : event === "Reply to Comment" ? "Reply to comments"
+        : event === "Like Comment" ? "Like comments"
+          : event === "Export to Google Sheet" ? "Export comments" : "Hide comments";
+  const stepSubtitle = isCommentStep
+    ? node.type === "trigger"
+      ? "Choose pages and set the rule, then preview which comments match"
+      : ""
+    : node.type === "trigger" ? "When does this step fire?" : "What happens when it fires?";
 
   // Footer CTA gating: an event must be chosen (except for services configured
   // without one), and Meta Launch/Duplicate Ad steps must have a target ad set.
@@ -487,7 +512,9 @@ export function ConfigPanel({ node, callbacks }: ConfigPanelProps) {
     service !== "report" &&
     service !== "manual";
   const targetAdSetMissing = isMetaTargetAdSetMissing(service, event, config);
-  const footerDisabled = eventMissing || targetAdSetMissing || !editorIdentity.canMutate;
+  const commentPagesMissing = service === "comments" && node.type === "trigger" &&
+    (!Array.isArray(config.pageIds) || config.pageIds.length === 0);
+  const footerDisabled = eventMissing || targetAdSetMissing || commentPagesMissing || !editorIdentity.canMutate;
 
   return (
     <div className="flex h-full max-h-[85vh] flex-col border-l bg-card md:max-h-none">
@@ -501,9 +528,9 @@ export function ConfigPanel({ node, callbacks }: ConfigPanelProps) {
           {service && renderServiceIcon(currentService, "medium")}
           <div className="min-w-0">
             <h2 className="truncate text-sm font-semibold md:text-[15px]">
-              {nodeIndex}. {event || node.event || stepTypeLabel}
+              {isCommentStep ? commentStepTitle : `${nodeIndex}. ${event || node.event || stepTypeLabel}`}
             </h2>
-            <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{stepSubtitle}</p>
+            {stepSubtitle && <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{stepSubtitle}</p>}
           </div>
         </div>
         <Button variant="ghost" size="icon" className="h-8 w-8 flex-shrink-0" onClick={onClose}>
@@ -554,8 +581,8 @@ export function ConfigPanel({ node, callbacks }: ConfigPanelProps) {
 
         {!isHydrating && activeTab === "setup" && (
           <div className="space-y-5">
-            {/* App Selector — flattened: a compact row, not a nested card */}
-            <div className="space-y-1.5">
+            {/* Comment steps keep the single setup surface used in AdManage. */}
+            {!isCommentStep && <div className="space-y-1.5">
               <Label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">App</Label>
               {service ? (
                 <div className="flex items-center justify-between gap-3">
@@ -617,7 +644,7 @@ export function ConfigPanel({ node, callbacks }: ConfigPanelProps) {
                   </div>
                 </div>
               )}
-            </div>
+            </div>}
 
             {/* Event selector - hide for media-library, delay, google-drive, frameio, manual, and single-event action services */}
             {service &&
@@ -632,6 +659,7 @@ export function ConfigPanel({ node, callbacks }: ConfigPanelProps) {
               service !== "webhook" &&
               service !== "notification" &&
               service !== "report" &&
+              service !== "comments" &&
               service !== "approval" && (
                 <div className="space-y-1.5">
                   <Label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
@@ -1033,11 +1061,11 @@ export function ConfigPanel({ node, callbacks }: ConfigPanelProps) {
             {service === "webhook" && node.type === "action" && <WebhookConfig config={config} setConfig={setConfig} />}
 
             {service === "comments" && node.type === "trigger" && (
-              <CommentsTriggerConfig config={config} setConfig={setConfig} node={node} />
+              <CommentsTriggerConfig config={config} setConfig={setConfig} node={node} event={event} setEvent={setEvent} />
             )}
 
             {service === "comments" && node.type === "action" && (
-              <CommentsActionConfig config={config} setConfig={setConfig} node={node} event={event} />
+              <CommentsActionConfig config={config} setConfig={setConfig} node={node} event={event} setEvent={setEvent} />
             )}
 
             {service === "notification" && node.type === "action" && (
@@ -1053,7 +1081,7 @@ export function ConfigPanel({ node, callbacks }: ConfigPanelProps) {
         {!isHydrating && activeTab === "preview" && (
           <div className="space-y-4">
             {/* Compact config summary — uses LIVE config so channel chip updates instantly */}
-            <StepPreview node={{ ...node, service, event, config }} index={nodeIndex - 1} />
+            {service !== "comments" && <StepPreview node={{ ...node, service, event, config }} index={nodeIndex - 1} />}
 
             {service === "tiktok-ads" && (event === "Duplicate Campaign" || event === "Duplicate Ad Group") && (
               <TikTokDuplicationCompatAlert
@@ -1079,7 +1107,7 @@ export function ConfigPanel({ node, callbacks }: ConfigPanelProps) {
                   service === "axon-ads") &&
                 event?.startsWith("Launch on")
               ) &&
-              service !== "notification" && (
+              service !== "notification" && service !== "comments" && (
                 <TriggerOutputSummary
                   triggerNode={flow.nodes.find((n) => n.type === "trigger")}
                   selectedAccountId={flow.selectedAccountId}
@@ -1109,6 +1137,16 @@ export function ConfigPanel({ node, callbacks }: ConfigPanelProps) {
                   }
                 />
               )}
+
+            {service === "comments" && (
+              <DemoCommentPreview
+                showStats
+                config={node.type === "trigger"
+                  ? config
+                  : flow.nodes.find((candidate) => candidate.type === "trigger" && candidate.service === "comments")?.config ?? {}}
+                actionEvent={node.type === "action" ? event : flow.nodes.find((candidate) => candidate.type === "action" && candidate.service === "comments")?.event}
+              />
+            )}
 
             {((service === "meta-ads" && (event === "Duplicate Campaign" || event === "Duplicate Ad Set")) ||
               (service === "tiktok-ads" && (event === "Duplicate Campaign" || event === "Duplicate Ad Group"))) && (
@@ -1255,7 +1293,15 @@ export function ConfigPanel({ node, callbacks }: ConfigPanelProps) {
         )}
       </div>
 
-      {/* Footer — only in Setup. Preview doesn't need a big CTA. */}
+      {activeTab === "preview" && isCommentStep && (
+        <div className="border-t px-4 py-3 md:px-5">
+          <p className="mb-2 text-[11px] text-muted-foreground">Save this automation</p>
+          <Button className="h-10 w-full" disabled={!editorIdentity.canMutate || isSavingPreview} onClick={() => void saveCommentPreview()}>
+            <Save className="mr-1.5 h-4 w-4" />{isSavingPreview ? "Saving…" : "Save"}
+          </Button>
+        </div>
+      )}
+      {/* Setup continues to the preview before a comment automation can be saved. */}
       {activeTab === "setup" && (
         <div className="border-t px-4 py-3 md:px-5 md:py-3.5">
           <Button
@@ -1268,7 +1314,9 @@ export function ConfigPanel({ node, callbacks }: ConfigPanelProps) {
               ? "To continue, choose an event"
               : targetAdSetMissing
                 ? "Add a target ad set to continue"
-                : "Preview →"}
+                : commentPagesMissing
+                  ? "Choose pages to preview"
+                  : isCommentStep ? "Preview matches" : "Preview →"}
           </Button>
         </div>
       )}
