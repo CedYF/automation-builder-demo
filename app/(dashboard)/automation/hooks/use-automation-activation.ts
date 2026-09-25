@@ -70,6 +70,7 @@ export function useAutomationActivation(): AutomationActivationControls {
    * the null case is rejected by `handleToggleActive` before this ever runs.
    */
   const activateAutomation = async (nextActive: boolean, ruleId: number) => {
+    // TODO(candidate): logEvent flow_activated. A successful run needs execution evidence and stays simulated here.
     // Optimistic — the switch/button is the primary signal that this thing is
     // live, so it must not lag behind the click. Reverted below if the write fails.
     const previousActive = flow.isActive;

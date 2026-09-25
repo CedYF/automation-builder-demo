@@ -24,9 +24,6 @@ import {
 } from "@/lib/chat/automation-chat-intent";
 import { listCanvasOpenSlots } from "../lib/canvas-open-slots";
 import { inferAutomationAccountPlatform } from "../lib/automation-account-platform";
-import { emitTelemetry } from "@/lib/telemetry/emit";
-import { redactText } from "@/lib/telemetry/store";
-import type { ErrorCategory, JourneyOutcome, ProblemCategory } from "@/lib/telemetry/events";
 
 const ASSISTANT_STREAM_URL = "/api/automation-assistant/stream";
 
@@ -152,21 +149,6 @@ export function useAutomationAssistant(options: UseAutomationAssistantOptions): 
   const consumedFlowStartIdsRef = useRef<Set<string>>(new Set());
   const turnCounterRef = useRef(0);
   const explanationOnlyRef = useRef(false);
-  /** Per-turn telemetry scratch: problem category / question flag learned mid-stream, tool start times. */
-  const telemetryRef = useRef<
-    Map<
-      string,
-      {
-        attemptId: string;
-        problemCategory: ProblemCategory;
-        askedQuestion: boolean;
-        toolStarts: Map<string, number>;
-      }
-    >
-  >(new Map());
-  /** Timestamp of the last completed ask_user question, used to time `question_answered`. */
-  const lastAskUserAtRef = useRef<number | null>(null);
-  const currentAssistantIdRef = useRef<string | null>(null);
   const optionsRef = useRef(options);
   optionsRef.current = options;
   useEffect(
@@ -302,91 +284,19 @@ export function useAutomationAssistant(options: UseAutomationAssistantOptions): 
         });
         return;
       }
-      const telemetryEntry = telemetryRef.current.get(assistantId);
       switch (event.type) {
         case "conversation":
           conversationIdRef.current = event.conversationId;
           return;
-        case "turn_meta":
-          if (telemetryEntry) {
-            telemetryEntry.problemCategory = (event.problemCategory as ProblemCategory | undefined) ?? "none";
-            telemetryEntry.askedQuestion = event.askedQuestion ?? false;
-          }
-          return;
         case "tool_start":
           upsertAssistantToolCall(assistantId, event.toolCall);
           maybeApplyBuilderStep(event.toolCall, "tool_start");
-          telemetryEntry?.toolStarts.set(event.toolCall.id, Date.now());
-          if (telemetryEntry) {
-            emitTelemetry({
-              type: "tool_call_started",
-              attemptId: telemetryEntry.attemptId,
-              turnId: assistantId,
-              toolCallId: event.toolCall.id,
-              toolName: event.toolCall.name,
-            });
-          }
           return;
-        case "tool_result": {
+        case "tool_result":
           upsertAssistantToolCall(assistantId, event.toolCall);
           maybeApplyBuilderStep(event.toolCall, "tool_result");
           if (event.toolCall.status === "done") maybeApplyFlow(event.toolCall);
-          if (telemetryEntry) {
-            const startedAt = telemetryEntry.toolStarts.get(event.toolCall.id);
-            const durationMs = event.toolCall.latencyMs ?? (startedAt ? Date.now() - startedAt : 0);
-            const status: "done" | "error" | "discarded" =
-              event.toolCall.status === "error" ? "error" : event.toolCall.status === "discarded" ? "discarded" : "done";
-            emitTelemetry({
-              type: "tool_call_finished",
-              attemptId: telemetryEntry.attemptId,
-              turnId: assistantId,
-              toolCallId: event.toolCall.id,
-              toolName: event.toolCall.name,
-              durationMs,
-              status,
-              errorCategory: status === "error" ? "server_error" : "none",
-            });
-            if (isAutomationBuilderTool(event.toolCall.name) && event.toolCall.status === "done") {
-              const changeKind =
-                event.toolCall.name === AUTOMATION_BUILDER_TOOLS.START
-                  ? "start"
-                  : event.toolCall.name === AUTOMATION_BUILDER_TOOLS.ADD
-                    ? "add_step"
-                    : event.toolCall.name === AUTOMATION_BUILDER_TOOLS.UPDATE
-                      ? "update_step"
-                      : "remove_step";
-              emitTelemetry({
-                type: "draft_changed",
-                attemptId: telemetryEntry.attemptId,
-                turnId: assistantId,
-                changeKind,
-                nodeCount: getCanvasStepCount(),
-              });
-            }
-            if (event.toolCall.name === ASSISTANT_FLOW_TOOL_NAME && event.toolCall.status === "done") {
-              emitTelemetry({
-                type: "draft_changed",
-                attemptId: telemetryEntry.attemptId,
-                turnId: assistantId,
-                changeKind: "replace_flow",
-                nodeCount: getCanvasStepCount(),
-              });
-            }
-            if (event.toolCall.name === "ask_user" && event.toolCall.status === "done") {
-              const questionText =
-                typeof event.toolCall.args.question === "string" ? event.toolCall.args.question : "";
-              emitTelemetry({
-                type: "question_asked",
-                attemptId: telemetryEntry.attemptId,
-                turnId: assistantId,
-                questionDigest: redactText(questionText),
-                reason: telemetryEntry.problemCategory === "none" ? "clarification" : telemetryEntry.problemCategory,
-              });
-              lastAskUserAtRef.current = Date.now();
-            }
-          }
           return;
-        }
         case "pending_tool":
           // Gated writes pause the agent. Only create_automation is harvested onto
           // the canvas as "done"; other pending tools stay pending so we don't
@@ -461,37 +371,6 @@ export function useAutomationAssistant(options: UseAutomationAssistantOptions): 
         listCanvasOpenSlots(flowRef.current),
       );
 
-      const attemptId = `attempt-${assistantId}`;
-      currentAssistantIdRef.current = assistantId;
-      telemetryRef.current.set(assistantId, {
-        attemptId,
-        problemCategory: "none",
-        askedQuestion: false,
-        toolStarts: new Map(),
-      });
-
-      if (lastAskUserAtRef.current !== null) {
-        emitTelemetry({
-          type: "question_answered",
-          attemptId,
-          turnId: assistantId,
-          answeredAfterMs: Date.now() - lastAskUserAtRef.current,
-        });
-        lastAskUserAtRef.current = null;
-      }
-
-      emitTelemetry({
-        type: "attempt_started",
-        attemptId,
-        turnId: assistantId,
-        mode,
-        promptDigest: redactText(trimmed),
-        hadExistingDraft: flowRef.current.nodes.length > 0,
-        existingNodeCount: flowRef.current.nodes.length,
-        accountId: accountIdAtSend,
-        platform: accountPlatformAtSend ?? undefined,
-      });
-
       let turnFailed = false;
       try {
         // A transient SSE drop *before* any output (planning / first tool) is safe to replay: nothing
@@ -500,6 +379,7 @@ export function useAutomationAssistant(options: UseAutomationAssistantOptions): 
           if (controller.signal.aborted) return;
           let producedOutput = false;
           let hasPartialTurn = false;
+          // TODO(candidate): logEvent prompt_submitted (attempt 0) or stream_retry (attempt > 0). No per-turn id exists yet, so retries cannot be tied to one turn.
           try {
             await clientRef.current.stream(
               ASSISTANT_STREAM_URL,
@@ -540,30 +420,16 @@ export function useAutomationAssistant(options: UseAutomationAssistantOptions): 
               const messageText = err instanceof Error ? err.message : "The assistant hit an error. Try again.";
               turnFailed = true;
               setError(messageText);
-              const errorCategory: ErrorCategory = hasConversation ? "stream_transport" : "unknown";
-              emitTelemetry({
-                type: "stream_error",
-                attemptId,
-                turnId: assistantId,
-                errorCategory,
-                errorDigest: redactText(messageText),
-              });
               return;
             }
             if (!hasPartialTurn) {
               resetAssistantTurn(assistantId);
             }
-            emitTelemetry({
-              type: "attempt_retried",
-              attemptId,
-              turnId: assistantId,
-              retryNumber: attempt + 1,
-              reason: isRetryableStreamError(err) ? "transient_stream_drop" : "unknown",
-            });
             await delay(STREAM_RETRY_BASE_DELAY_MS * 2 ** attempt);
           }
         }
       } finally {
+        // TODO(candidate): logEvent turn_completed / turn_error with outcome, durationMs and errorCategory.
         setMessages((previous) =>
           previous.map((message) =>
             message.id === assistantId
@@ -581,26 +447,6 @@ export function useAutomationAssistant(options: UseAutomationAssistantOptions): 
         if (abortRef.current === controller) abortRef.current = null;
         inFlightRef.current = false;
         setIsLoading(false);
-
-        const entry = telemetryRef.current.get(assistantId);
-        const outcome: JourneyOutcome = controller.signal.aborted
-          ? "cancelled"
-          : turnFailed
-            ? "error"
-            : entry?.askedQuestion
-              ? "waiting"
-              : entry?.problemCategory === "schedule_fidelity"
-                ? "blocked"
-                : "drafted";
-        emitTelemetry({
-          type: "attempt_outcome",
-          attemptId,
-          turnId: assistantId,
-          outcome,
-          durationMs: Date.now() - startedAt,
-          turnCount: 1,
-          problemCategory: entry?.problemCategory ?? "none",
-        });
       }
     },
     [handleEvent, resetAssistantTurn, resolveSelectedAccountPlatform],
@@ -669,16 +515,6 @@ export function useAutomationAssistant(options: UseAutomationAssistantOptions): 
   }, []);
 
   const stop = useCallback(() => {
-    const assistantId = currentAssistantIdRef.current;
-    const entry = assistantId ? telemetryRef.current.get(assistantId) : undefined;
-    if (abortRef.current && entry) {
-      emitTelemetry({
-        type: "attempt_abandoned",
-        attemptId: entry.attemptId,
-        lastOutcome: "cancelled",
-        turnCount: turnCounterRef.current,
-      });
-    }
     abortRef.current?.abort();
   }, []);
 

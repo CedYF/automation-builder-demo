@@ -13,6 +13,17 @@ These observations concern the conversation and visible workflow. We did not ind
 | C05 — complete the requested flow | An earlier review described requests where a follow-up action was omitted or interpreted as a different operation: moving processed files to an Approved folder became watching that folder, or a pause-and-rename request lost the rename. | Whether the final flow satisfies every requested action rather than merely looking plausible. | Match requested operations and ordering; preserve the original trigger; report an unsupported operation explicitly instead of substituting another one. |
 | C06 — unsupported platform | Several requests asked to switch off specific Pinterest ads while a Meta account was selected. A prompt alone does not show whether the agent handled the mismatch correctly. | Account/platform mismatch and honest capability boundaries. | Detect the mismatch; offer a supported account/capability choice; do not build a Meta action and describe it as Pinterest. |
 
+## Channel-level evidence
+
+Reviewing the same feedback channel again showed three patterns worth checking against the cases above. They are counts of conversations we read, not measured failure rates.
+
+- **Use cases:** comment moderation dominates (hide or delete negative comments, reply to FAQ comments, hide comments naming a competitor). Scheduled pause and activate rules come second, for example pausing ads under a spend floor over seven days, or running Friday night and stopping just after midnight.
+- **"Explain what this automation does":** four or more customers asked this after the agent finished building. The builder does not say what was built, its state, or the next action. This underlies C01 and C03.
+- **Duplicate delivery:** the same customer message was processed two to four times, tracked internally as a known issue. The client retries a stream without a per-turn identifier, so a replay can produce a second summary. It relates to C01 and C04.
+- **Platform mismatch (C06):** one customer sent the same Pinterest request against a Meta account three times.
+
+The starter reproduces the mismatch, the duplicate summary, the clarification loop and the lost timezone with scripted prompts, listed in the README.
+
 ## Suggested fixture structure
 
 Use fictional resources such as “Demo Store”, “Creative Test Campaign”, “Approved Assets” and “Five-copy template”. Represent IDs with local fixture keys, never copied production IDs.

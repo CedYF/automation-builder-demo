@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
+    "fixtures:generate": "node --no-warnings scripts/generate-axiom-fixtures.ts",
     "eval": "vitest run evals/run.eval.test.ts --reporter=default --reporter=json --outputFile=evals/results/latest.json"
   },
   "dependencies": {

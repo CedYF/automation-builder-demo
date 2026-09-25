@@ -10,7 +10,6 @@ import { getNodeSummary } from "../lib/node-summary";
 import { useCustomMetricsById } from "../lib/use-custom-metrics-by-id";
 import { nodeTypeBadgeStyles } from "../lib/service-themes";
 import { normalizeAdscanEventForDisplay } from "../lib/adscan-events";
-import { emitTelemetry } from "@/lib/telemetry/emit";
 
 interface FullPreviewPanelProps {
   onClose: () => void;
@@ -191,16 +190,6 @@ function SlackPreview({
 export function FullPreviewPanel({ onClose }: FullPreviewPanelProps) {
   const { flow } = useAutomation();
   const customMetricsById = useCustomMetricsById();
-
-  // One `preview_viewed` per panel open, not per re-render.
-  useEffect(() => {
-    emitTelemetry({
-      type: "preview_viewed",
-      attemptId: `flow-${String(flow.id)}`,
-      nodeCount: flow.nodes.length,
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   const triggerNode = flow.nodes.find((n) => n.type === "trigger");
   const notificationNode = flow.nodes.find((n) => n.type === "action" && n.service === "notification");

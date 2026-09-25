@@ -43,7 +43,6 @@ import {
   isSelectableAutomationBuilderAccount,
 } from "../lib/automation-ad-account-options";
 import { getAutomationSaveSetupWarning } from "../lib/save-setup-warning";
-import { emitTelemetry } from "@/lib/telemetry/emit";
 
 export type NodeType = AutomationNodeType;
 
@@ -681,19 +680,10 @@ export function AutomationProvider({
     setFlow((prev) => ({ ...prev, name }));
   }, []);
 
-  const setFlowActive = useCallback(
-    (isActive: boolean) => {
-      setDraftEditVersion((version) => version + 1);
-      setFlow((prev) => ({ ...prev, isActive }));
-      emitTelemetry({
-        type: "automation_activated",
-        attemptId: `flow-${String(flow.id)}`,
-        ruleId: String(flow.id),
-        active: isActive,
-      });
-    },
-    [flow.id],
-  );
+  const setFlowActive = useCallback((isActive: boolean) => {
+    setDraftEditVersion((version) => version + 1);
+    setFlow((prev) => ({ ...prev, isActive }));
+  }, []);
 
   const setSelectedAccount = useCallback((accountId: string, accountName: string) => {
     setDraftEditVersion((version) => version + 1);
@@ -874,8 +864,9 @@ export function AutomationProvider({
     }));
   }, []);
 
-  const saveAutomationInner = useCallback(
+  const saveAutomation = useCallback(
     async ({ mode, name }: SaveAutomationOptions): Promise<SaveAutomationResult> => {
+      // TODO(candidate): logEvent flow_saved on success, with flowRevision. Saved is not active.
       if (!editorIdentity.canMutate) {
         return { ok: false, error: editorIdentity.error || "Automation is still loading. Try again." };
       }
@@ -1085,23 +1076,6 @@ export function AutomationProvider({
     [editorIdentity, extendedUser, flow, onAutomationIdChange],
   );
 
-  /** Wraps `saveAutomationInner` to emit a `draft_saved` telemetry event without touching its save logic. */
-  const saveAutomation = useCallback(
-    async (options: SaveAutomationOptions): Promise<SaveAutomationResult> => {
-      const result = await saveAutomationInner(options);
-      if (result.ok) {
-        emitTelemetry({
-          type: "draft_saved",
-          attemptId: `flow-${String(flow.id)}`,
-          ruleId: String(result.ruleId ?? flow.id),
-          nodeCount: flow.nodes.length,
-        });
-      }
-      return result;
-    },
-    [saveAutomationInner, flow.id, flow.nodes.length],
-  );
-
   // Comment automations execute on CommentsServer, not the Prisma automation
   // executor: save the rule there, start a manual run, and poll run status so
   // the panel shows real per-step progress (previously Run showed only a
@@ -1201,15 +1175,6 @@ export function AutomationProvider({
           result.outcome === "still-running"
         ) {
           setFlow((prev) => ({ ...prev, lastRun: new Date() }));
-        }
-        if (result.outcome === "completed") {
-          emitTelemetry({
-            type: "run_succeeded",
-            attemptId: `flow-${String(flow.id)}`,
-            ruleId: String(flow.id),
-            durationMs: 0,
-            evidence: "simulated",
-          });
         }
       } catch (error) {
         appendCommentLog({
@@ -1359,15 +1324,6 @@ export function AutomationProvider({
             setLastExecutionId(executeResult.executionId);
           }
           setFlow((prev) => ({ ...prev, lastRun: new Date() }));
-          if (executeResult.success) {
-            emitTelemetry({
-              type: "run_succeeded",
-              attemptId: `flow-${String(flow.id)}`,
-              ruleId: String(flow.id),
-              durationMs: 0,
-              evidence: "simulated",
-            });
-          }
           return;
         }
 
@@ -1487,15 +1443,6 @@ export function AutomationProvider({
                       setLastExecutionId(completeData.executionId);
                     }
                     setFlow((prev) => ({ ...prev, lastRun: new Date() }));
-                    if (completeData.success !== false) {
-                      emitTelemetry({
-                        type: "run_succeeded",
-                        attemptId: `flow-${String(flow.id)}`,
-                        ruleId: String(flow.id),
-                        durationMs: 0,
-                        evidence: "simulated",
-                      });
-                    }
                   }
                 } else if (event.type === "cancelled") {
                   sawTerminalEvent = true;
