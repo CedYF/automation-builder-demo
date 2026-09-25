@@ -29,6 +29,31 @@ Open **Admin analytics** from the sidebar. Remove the placeholder presentation a
 
 Use setup completion, step drop-off, time to first success, failed runs, and repeat successful runs as supporting measures. The sample events in [`fixtures/axiom-events.ndjson`](fixtures/axiom-events.ndjson) are a starting point; add or adapt mock events if needed to measure this one journey honestly.
 
+## Current screens
+
+These show the starting point, not a design to preserve.
+
+<details>
+<summary>View the four demo screenshots</summary>
+
+**Automations home and Create**
+
+![Automations home with the Create button](docs/screenshots/00-automations-home.png)
+
+**Agent asks which page to watch**
+
+![Agent asking the customer to confirm a mock page](docs/screenshots/01-agent-page-confirmation.png)
+
+**Preview after choosing one page**
+
+![Comment preview scoped to the selected mock page](docs/screenshots/02-comment-preview.png)
+
+**Admin health dashboard placeholder**
+
+![Placeholder analytics for automation setup](docs/screenshots/03-admin-health-dashboard.png)
+
+</details>
+
 ## Run and check
 
 ```bash

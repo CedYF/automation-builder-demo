@@ -1141,9 +1141,7 @@ export function ConfigPanel({ node, callbacks }: ConfigPanelProps) {
             {service === "comments" && (
               <DemoCommentPreview
                 showStats
-                config={node.type === "trigger"
-                  ? config
-                  : flow.nodes.find((candidate) => candidate.type === "trigger" && candidate.service === "comments")?.config ?? {}}
+                config={flow.nodes.find((candidate) => candidate.type === "trigger" && candidate.service === "comments")?.config ?? config}
                 actionEvent={node.type === "action" ? event : flow.nodes.find((candidate) => candidate.type === "action" && candidate.service === "comments")?.event}
               />
             )}
