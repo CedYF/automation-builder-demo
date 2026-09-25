@@ -1,67 +1,46 @@
 # Automation agent challenge
 
-This is a mock AdManage demo. Work on **one journey only: Auto-hide negative comments**. No real pages, comments, or provider actions are involved.
+Improve the mock **Auto-hide negative comments** experience. This is the only flow. No real pages or comments are changed.
 
-## The customer problem
+## Customer problem
 
-Customers ask the agent to set up comment hiding, but they struggle to tell which pages it will watch, which comments it will hide, whether the automation is only a draft or actually on, and what to do next. Some ask the agent to explain the flow immediately after it builds one. The experience needs to earn their trust before they turn it on. See [customer cases](docs/customer-cases.md) for context.
+People cannot tell which pages the automation watches, why a comment would be hidden, or whether their draft is actually on. Some ask the Agent to explain what it just built. See the [customer cases](docs/customer-cases.md).
 
-## Your job: delete what gets in the way, then improve it
+## Your task
 
-The current UI is a starting point, not a design to preserve. Remove confusing panels, controls, steps, copy, or code. Replace them with a clearer experience. Keep the single comment-hiding journey and its mock data working; you can change how the customer gets through it.
+**Delete confusing UI and improve the journey.** The current layout and code are starting points, not requirements.
 
-### 1. Agent UI and setup workflow
+1. **Agent setup:** Start at **Automate → Create**. Find mock pages and ask which to watch. Configure the rule and hide action. Preview mock comments that would be hidden or stay visible, with reasons. Make draft, saved, and on states clear, with one useful next action.
+2. **Health dashboard:** Replace the **Admin analytics** placeholder. Show where setup drops off, Agent failures, successful runs, and the biggest problem to fix next. Count people or journeys, not raw events; retries must not inflate results.
 
-Start at **Automate → Create**. It opens the only template in the normal builder with the Agent beside it. Make this journey simple and obvious:
-
-1. The Agent finds the connected **mock** Facebook and Instagram pages, then asks the customer to confirm which to watch.
-2. It sets up the negative-comment rule and the hide action on the canvas. The customer can see and change what the rule will match.
-3. A preview uses **mock comments** to show what would be hidden and what would stay visible, with a reason for each decision.
-4. The UI states clearly whether the automation is a draft, saved, or on, and gives one useful next action. Saving and turning it on are separate steps.
-
-Change the conversation and the UI together. We care about whether a new customer can understand and complete the setup, not whether the existing layout survives. Do not add more templates, a general chat area, or real integrations.
-
-### 2. Admin health dashboard
-
-Open **Admin analytics** from the sidebar. Remove the placeholder presentation and build a dashboard that helps the team decide what to fix next as usage grows. Show the setup funnel, where people leave, Agent errors or repeated questions, and whether completed automations actually run successfully. Make the biggest problem and its affected customer count easy to spot. Counts should use people or setup journeys, not raw events; retries must not inflate them.
-
-**Main KPI: first successful automation rate.** Of the unique people who start this template, what percentage save it, turn it on, and reach a first successful comment-hiding run within 7 days? Show the numerator, denominator, and time window; only include starts old enough to have a full 7 days. A saved draft or an enabled rule with no successful run does not count. In this demo, label runs and results as simulated.
-
-Use setup completion, step drop-off, time to first success, failed runs, and repeat successful runs as supporting measures. The sample events in [`fixtures/axiom-events.ndjson`](fixtures/axiom-events.ndjson) are a starting point; add or adapt mock events if needed to measure this one journey honestly.
+**Main KPI — first successful automation rate:** Of people who start this template, what percentage save it, turn it on, and get a first successful simulated comment-hiding run within 7 days? Show the numerator, denominator, and time window. Use only starts old enough to have a full 7 days. The [sample events](fixtures/axiom-events.ndjson) can be adapted for this one journey.
 
 ## Current screens
 
-These show the starting point, not a design to preserve.
+These are starting points you can replace.
 
-<details>
-<summary>View the four demo screenshots</summary>
+**Automations home**
 
-**Automations home and Create**
+![Automations home and Create button](docs/screenshots/00-automations-home.png)
 
-![Automations home with the Create button](docs/screenshots/00-automations-home.png)
+**Agent page choice**
 
-**Agent asks which page to watch**
+![Agent asking which mock page to watch](docs/screenshots/01-agent-page-confirmation.png)
 
-![Agent asking the customer to confirm a mock page](docs/screenshots/01-agent-page-confirmation.png)
+**Comment preview**
 
-**Preview after choosing one page**
+![Preview scoped to the chosen mock page](docs/screenshots/02-comment-preview.png)
 
-![Comment preview scoped to the selected mock page](docs/screenshots/02-comment-preview.png)
+**Admin analytics placeholder**
 
-**Admin health dashboard placeholder**
+![Automation health dashboard placeholder](docs/screenshots/03-admin-health-dashboard.png)
 
-![Placeholder analytics for automation setup](docs/screenshots/03-admin-health-dashboard.png)
-
-</details>
-
-## Run and check
+## Run
 
 ```bash
 pnpm install --frozen-lockfile
 pnpm dev
-pnpm typecheck
-pnpm test
-pnpm build
+pnpm typecheck && pnpm test && pnpm build
 ```
 
-Open `http://localhost:3000/automation` (Next.js may choose another port if 3000 is busy). The app needs no accounts or API keys. We will review the running UI and dashboard; no write-up is needed.
+Open `http://localhost:3000/automation` (or the port Next.js prints). No accounts, keys, or write-up needed. We will review the running UI and dashboard.
