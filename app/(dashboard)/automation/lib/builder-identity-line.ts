@@ -1,9 +1,8 @@
 /**
  * The mono line under the automation name: "#2507 · saved 2m ago".
  *
- * The builder autosaves nothing, so "did my last edit stick?" is a real
- * question. Showing the rule id next to a save recency answers it without a
- * toast the user has to catch.
+ * Flow automations use explicit saves. Comment automations show their separate
+ * automatic save state in the header instead of this formatter.
  *
  * `now` is injected so the formatter stays pure and testable.
  */

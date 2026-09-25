@@ -534,7 +534,7 @@ export function AssistantPanel({
           </div>
         )}
         <p className="px-1 text-[11px] text-muted-foreground">
-          Enter to send · Shift+Enter for a new line. Changes stay in the draft until you save.
+          Enter to send · Shift+Enter for a new line. Changes save automatically; turn on the automation when ready.
         </p>
       </form>
     </div>
@@ -570,7 +570,7 @@ function EmptyState({
         </h3>
         <p className="mx-auto mt-1 max-w-xs text-xs text-muted-foreground">
           {hasExistingFlow
-            ? "Describe a change and the agent edits the steps already on the canvas. Review the draft before saving or enabling."
+            ? "Describe a change and the agent edits the steps already on the canvas. Review the automatically saved draft before turning it on."
             : "Describe what you want to automate. The agent uses AdManage MCP tools to draft the flow and preview which ads it would affect."}
         </p>
         {hasExistingFlow && (

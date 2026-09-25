@@ -14,11 +14,11 @@ In the live coding session, you will be asked to change this demo so customers c
 2. **How can I check activity?** Show which comments were checked or hidden, on which Page, why, and whether the automation is on.
 3. **How often will this run?** Let customers turn on real-time checks for each new ad comment **and** run a one-time sweep to hide matching comments already posted. Show the current status and last result for each.
 
-Start at **Automate → Chat → Hide negative comments on my ads**. The Agent should find connected pages, confirm which to watch **before** editing the draft, then guide customers through preview, save, and turn-on. Preview and confirm the existing-comment sweep before running it; show its result in Activity.
+Start at **Automate → Chat → Hide negative comments on my ads**. The Agent should find connected pages, confirm which to watch **before** editing the draft, and save changes automatically. Guide customers through preview and turn-on with no Save step. Preview and confirm the existing-comment sweep before running it; show its result in Activity.
 
 Improve **Admin analytics**: show setup drop-off, Agent failures, successful runs, and the biggest issue to fix. Deduplicate retries.
 
-**Main KPI — first successful automation rate:** Percentage of starters who save, turn on, and get a successful simulated hiding run within 7 days, from either mode. Show numerator, denominator, and time window; include only starts at least 7 days old.
+**Main KPI — first successful automation rate:** Percentage of starters who turn on the automation and get a successful simulated hiding run within 7 days, from either mode. Show numerator, denominator, and time window; include only starts at least 7 days old.
 
 Label mock results as simulated.
 

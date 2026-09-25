@@ -6,8 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
-import { Save, X } from "lucide-react";
-import { toast } from "sonner";
+import { X } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { getServiceInfo } from "../lib/service-icons";
@@ -269,7 +268,7 @@ interface ConfigPanelProps {
 
 export function ConfigPanel({ node, callbacks }: ConfigPanelProps) {
   const { onClose } = callbacks;
-  const { updateNode, flow, editorIdentity, saveAutomation } = useAutomation();
+  const { updateNode, flow, editorIdentity } = useAutomation();
   const { currentWorkspace } = useUser();
   const isEssentialPlan = useIsEssentialAutomationPlan();
   const [panelTab, setPanelTab] = useQueryState("panel", parseAsString.withDefault("setup"));
@@ -283,18 +282,6 @@ export function ConfigPanel({ node, callbacks }: ConfigPanelProps) {
   // Short skeleton window while child selectors (ad accounts, campaigns) boot up,
   // so users don't see the content shift as each piece mounts.
   const [isHydrating, setIsHydrating] = useState(true);
-  const [isSavingPreview, setIsSavingPreview] = useState(false);
-
-  const saveCommentPreview = async () => {
-    setIsSavingPreview(true);
-    try {
-      const result = await saveAutomation({ mode: editorIdentity.existingRuleId !== null ? "update" : "create" });
-      if (result.ok) toast.success(`${result.name} saved`);
-      else toast.error(result.error);
-    } finally {
-      setIsSavingPreview(false);
-    }
-  };
 
   // Push local edits into flow state. Depend only on local state — not the `node`
   // prop reference — or every updateNode() would recreate the node object and
@@ -1293,13 +1280,10 @@ export function ConfigPanel({ node, callbacks }: ConfigPanelProps) {
 
       {activeTab === "preview" && isCommentStep && (
         <div className="border-t px-4 py-3 md:px-5">
-          <p className="mb-2 text-[11px] text-muted-foreground">Save this automation</p>
-          <Button className="h-10 w-full" disabled={!editorIdentity.canMutate || isSavingPreview} onClick={() => void saveCommentPreview()}>
-            <Save className="mr-1.5 h-4 w-4" />{isSavingPreview ? "Saving…" : "Save"}
-          </Button>
+          <p className="text-xs text-muted-foreground">Changes save automatically. Turn on the automation when the preview looks right.</p>
         </div>
       )}
-      {/* Setup continues to the preview before a comment automation can be saved. */}
+      {/* Setup continues to the preview before a comment automation can be turned on. */}
       {activeTab === "setup" && (
         <div className="border-t px-4 py-3 md:px-5 md:py-3.5">
           <Button

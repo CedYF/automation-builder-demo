@@ -432,7 +432,7 @@ function commentTemplateTurn(): Omit<MockTurn, "conversationId"> {
         ],
       },
     ],
-    closing: "**Next:** Confirm the page below. I’ll add it to the draft with checks for negative tone, brand-undermining comments, and hostile pile-ons. Then you can preview what would be hidden or stay visible before saving. **No pages have been added yet.**",
+    closing: "**Next:** Confirm the page below. I’ll add it to the draft with checks for negative tone, brand-undermining comments, and hostile pile-ons. Changes save automatically; preview what would be hidden or stay visible before turning it on. **No pages have been added yet.**",
     meta: { problemCategory: "none", askedQuestion: true },
   };
 }
@@ -514,7 +514,7 @@ function commentPagesTurn(message: string): Omit<MockTurn, "conversationId"> {
         ],
       },
     ],
-    closing: "The draft now watches only the pages you confirmed. Next, **preview the mock matches**, adjust tone or meaning scan if needed, then **Save** and turn it on when you’re ready. No live comments are changed in this demo.",
+    closing: "The draft now watches only the pages you confirmed and saves automatically. Next, **preview the mock matches**, adjust tone or meaning scan if needed, then turn it on when you’re ready. No live comments are changed in this demo.",
   };
 }
 

@@ -59,7 +59,7 @@ import {
 } from "../_features/comment-automation/hooks/use-comment-automation-members";
 import { RunPagesDialog } from "../_features/comment-automation/components/run-pages-dialog";
 import { automationTemplates } from "../lib/automation-templates";
-import { actionEventToType, isCommentAutomationFlow } from "../lib/comment-flow-mapper";
+import { actionEventToType, isCommentAutomationFlow, readCommentPageIdsFromFlow } from "../lib/comment-flow-mapper";
 import { buildCommentActionRuleSummary } from "../lib/comment-action-setup-summary";
 import { useUser } from "@/lib/providers/user-provider";
 import { canManageAutomationBySource, canManageAutomationRules } from "@/lib/automation/automation-access";
@@ -85,6 +85,7 @@ export function AutomationHeader({ onBackToTable, isAssistantActive, onAskAiTogg
   const {
     flow,
     editorIdentity,
+    updateFlowName,
     setFlowActive,
     exportFlow,
     importFlowAsNew,
@@ -130,9 +131,53 @@ export function AutomationHeader({ onBackToTable, isAssistantActive, onAskAiTogg
   // saves are known, so it stays null until the user saves.
   const [savedAt, setSavedAt] = useState<Date | null>(null);
   const [identityNow, setIdentityNow] = useState<Date | null>(null);
+  const [autoSaveState, setAutoSaveState] = useState<"waiting" | "pending" | "saving" | "saved" | "error">("waiting");
+  const [autoSaveRetry, setAutoSaveRetry] = useState(0);
+  const lastAutoSavedFingerprintRef = useRef<string | null>(null);
+  const failedAutoSaveFingerprintRef = useRef<string | null>(null);
 
   const isEditorIdentityReady = editorIdentity.canMutate;
   const getExistingAutomationId = (): number | null => editorIdentity.existingRuleId;
+  const commentPageCount = isCommentAutomation ? readCommentPageIdsFromFlow(flow.nodes).length : 0;
+  const commentFingerprint = JSON.stringify({ name: flow.name, nodes: flow.nodes, accountId: flow.selectedAccountId });
+
+  useEffect(() => {
+    if (!isCommentAutomation || !canManageAutomations || !isEditorIdentityReady) return;
+    if (lastAutoSavedFingerprintRef.current === null && editorIdentity.origin === "persisted") {
+      lastAutoSavedFingerprintRef.current = commentFingerprint;
+      setAutoSaveState("saved");
+      return;
+    }
+    if (commentPageCount === 0) {
+      setAutoSaveState("waiting");
+      return;
+    }
+    if (commentFingerprint === lastAutoSavedFingerprintRef.current) {
+      setAutoSaveState("saved");
+      return;
+    }
+    if (commentFingerprint === failedAutoSaveFingerprintRef.current || isSaving) return;
+    setAutoSaveState("pending");
+    const timer = setTimeout(() => {
+      setIsSaving(true);
+      setAutoSaveState("saving");
+      void saveAutomation({ mode: editorIdentity.existingRuleId === null ? "create" : "update", name: flow.name })
+        .then((result) => {
+          if (result.ok) {
+            lastAutoSavedFingerprintRef.current = commentFingerprint;
+            failedAutoSaveFingerprintRef.current = null;
+            setSavedAt(new Date());
+            setAutoSaveState("saved");
+          } else {
+            failedAutoSaveFingerprintRef.current = commentFingerprint;
+            setAutoSaveState("error");
+            toast.error(`Changes could not be saved: ${result.error}`);
+          }
+        })
+        .finally(() => setIsSaving(false));
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [autoSaveRetry, canManageAutomations, commentFingerprint, commentPageCount, editorIdentity.existingRuleId, editorIdentity.origin, flow.name, isCommentAutomation, isEditorIdentityReady, isSaving, saveAutomation]);
 
   // Run history used to be a grey button with no explanation on an unsaved
   // draft, which reads as broken rather than "there is nothing to show yet".
@@ -234,6 +279,14 @@ export function AutomationHeader({ onBackToTable, isAssistantActive, onAskAiTogg
       return;
     }
 
+    if (isCommentAutomation) {
+      const nextName = localName.trim();
+      initialNameRef.current = nextName;
+      updateFlowName(nextName);
+      setIsEditingName(false);
+      return;
+    }
+
     setIsSavingName(true);
     try {
       const result = await saveAutomation({ mode: "update", name: localName });
@@ -274,10 +327,14 @@ export function AutomationHeader({ onBackToTable, isAssistantActive, onAskAiTogg
     }
   };
 
-  // Blurring with no unsaved edit just closes the field. With an unsaved
-  // edit, stay open so the Save/Cancel buttons remain reachable rather than
-  // silently reverting or auto-saving the whole automation on blur.
+  // Comment names join the automatically saved draft on blur. Other flow
+  // automations retain their explicit name confirmation controls.
   const handleNameInputBlur = () => {
+    if (isCommentAutomation) {
+      if (isNameModified) void handleSaveName();
+      else setIsEditingName(false);
+      return;
+    }
     if (!isNameModified) {
       setIsEditingName(false);
     }
@@ -436,11 +493,8 @@ export function AutomationHeader({ onBackToTable, isAssistantActive, onAskAiTogg
       return;
     }
 
-    // Run uses the in-memory flow — it does not save. The config panel footer
-    // and header both keep Save as its own action so the builder path is:
-    // preview → run → save. Exception: a live recurring automation must not
-    // be implicitly overwritten; Run there uses the last saved version and
-    // Save (with its dialog) is how edits land.
+    // Run uses the current in-memory flow. Comment edits save automatically;
+    // other recurring flow automations retain their explicit save behavior.
     if (isActivelyRunning) {
       setShowExecutionPanel(true);
       await runAutomation();
@@ -511,7 +565,7 @@ export function AutomationHeader({ onBackToTable, isAssistantActive, onAskAiTogg
                     )}
                   </button>
                 )}
-                {isNameModified && (
+                {isNameModified && !isCommentAutomation && (
                   <div className="flex flex-shrink-0 items-center gap-1.5">
                     <Button
                       onClick={handleSaveName}
@@ -540,7 +594,21 @@ export function AutomationHeader({ onBackToTable, isAssistantActive, onAskAiTogg
                   </div>
                 )}
               </div>
-              <span className="truncate px-1.5 font-mono text-[11px] text-muted-foreground">{identityLine}</span>
+              <span className="truncate px-1.5 font-mono text-[11px] text-muted-foreground" role="status">
+                {isCommentAutomation
+                  ? autoSaveState === "waiting" ? "Choose a page to start · changes save automatically"
+                    : autoSaveState === "pending" ? "Changes saving shortly…"
+                      : autoSaveState === "saving" ? "Saving changes…"
+                        : autoSaveState === "error" ? "Changes not saved"
+                          : `${getExistingAutomationId() !== null ? `#${getExistingAutomationId()} · ` : ""}Changes saved automatically`
+                  : identityLine}
+              </span>
+              {isCommentAutomation && autoSaveState === "error" && (
+                <button type="button" className="self-start px-1.5 text-xs font-medium text-primary underline" onClick={() => {
+                  failedAutoSaveFingerprintRef.current = null;
+                  setAutoSaveRetry((value) => value + 1);
+                }}>Retry</button>
+              )}
             </div>
           </div>
 
@@ -554,9 +622,7 @@ export function AutomationHeader({ onBackToTable, isAssistantActive, onAskAiTogg
                 }
                 setAssistantOpen(assistantOpen ? null : true);
               }}
-              // Identical to Save: a solid violet pill sitting beside Save and Run
-              // made the assistant the loudest thing in the header and pulled focus
-              // away from the actual work.
+              // An outlined assistant control keeps Run as the main action.
               variant="outline"
               size="sm"
               className="h-8 gap-2"
@@ -567,7 +633,7 @@ export function AutomationHeader({ onBackToTable, isAssistantActive, onAskAiTogg
               <Sparkles className="h-4 w-4" />
               <span className="hidden lg:inline">Ask AI</span>
             </Button>
-            <Button
+            {!isCommentAutomation && <Button
               onClick={handleSave}
               disabled={isSaving || !canManageAutomations || !isEditorIdentityReady}
               variant="outline"
@@ -577,7 +643,7 @@ export function AutomationHeader({ onBackToTable, isAssistantActive, onAskAiTogg
             >
               {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
               <span className="hidden sm:inline">{isSaving ? "Saving..." : "Save"}</span>
-            </Button>
+            </Button>}
 
             {/* Run — the only filled button. The caret carries the run variants. */}
             {isExecuting ? (
