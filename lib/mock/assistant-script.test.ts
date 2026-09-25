@@ -17,8 +17,8 @@ describe("auto-hide negative comments agent turn", () => {
     expect(calls.map((call) => call.name)).toEqual(["list_pages", "ask_user"]);
     expect(calls[1].args).toMatchObject({
       kind: "choice",
-      question: "Which pages should Auto-hide negative comments watch?",
-      options: [{ label: "All three pages" }, { label: "UK Facebook" }, { label: "UK Instagram" }, { label: "US Facebook" }],
+      question: "Which pages should I watch for comments on your ads?",
+      options: [{ label: "UK Facebook" }, { label: "US Facebook" }, { label: "UK Instagram" }, { label: "All three pages" }],
     });
     expect(turn.meta?.askedQuestion).toBe(true);
     expect(turn.closing).toContain("No pages have been added yet");

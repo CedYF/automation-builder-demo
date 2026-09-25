@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FlowBuilder } from "./components/flow-builder";
 import { AutomationHeader } from "./components/automation-header";
 import { AutomationHome } from "./components/automation-home";
+import { AutomationChatTab } from "./components/automation-chat-tab";
 import { AutomationProvider } from "./contexts/automation-context";
 import { AutomationsTable } from "./components/automations-table";
 import { AutomationHistory } from "./components/automation-history";
@@ -43,7 +44,7 @@ export default function Home() {
   const [view, setView] = useQueryState("view", parseAsString.withDefault("table"));
   const [templateSearch, setTemplateSearch] = useState("");
   const [selectedAutomationId, setSelectedAutomationId] = useQueryState("automationId", parseAsString);
-  const [requestedTab, setActiveTab] = useQueryState("tab", parseAsString.withDefault("automations"));
+  const [requestedTab, setActiveTab] = useQueryState("tab", parseAsString.withDefault("chat"));
   const [historyId, setHistoryId] = useQueryState("historyId", parseAsInteger);
   const [assistantOpen, setAssistantOpen] = useQueryState("assistant", parseAsBoolean.withDefault(false));
   const [assistantSeed, setAssistantSeed] = useQueryState("assistantSeed", parseAsString);
@@ -166,7 +167,7 @@ export default function Home() {
             <div className="flex flex-wrap items-center justify-between gap-3 px-4 pt-4 md:px-8 md:pt-6">
               <div className="flex flex-wrap items-baseline gap-3">
                 <h1 className="text-2xl font-bold tracking-tight text-foreground">Automate</h1>
-                <p className="text-sm text-muted-foreground">{headerSummary}</p>
+                {activeTab === "automations" && <p className="text-sm text-muted-foreground">{headerSummary}</p>}
               </div>
               {activeTab === "automations" && canManageCommentAutomations(extendedUser?.role) && (
                 <Button onClick={() => handleOpenAutomation(HIDE_NEGATIVE_COMMENTS_TEMPLATE_ID)}>
@@ -213,7 +214,9 @@ export default function Home() {
 
             {/* Tab Content */}
             <div className={homeTabContentClass(isHomeTab)}>
-              {activeTab === "automations" ? (
+              {activeTab === "chat" ? (
+                <AutomationChatTab onStart={() => handleOpenAutomation(HIDE_NEGATIVE_COMMENTS_TEMPLATE_ID)} />
+              ) : activeTab === "automations" ? (
                 <div className={HOME_SHELL_PADDING_CLASS}>
                   <AutomationHome
                     onOpenAutomation={handleOpenAutomation}

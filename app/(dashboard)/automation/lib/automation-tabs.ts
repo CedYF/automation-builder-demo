@@ -6,7 +6,8 @@ import type { AutomationAccessScope } from "@/lib/automation/automation-access";
  * here.
  */
 export const AUTOMATION_TABS = [
-  { value: "automations", label: "Home" },
+  { value: "chat", label: "Chat" },
+  { value: "automations", label: "Automations" },
   { value: "templates", label: "Templates" },
   { value: "history", label: "History" },
 ] as const;
@@ -14,13 +15,14 @@ export const AUTOMATION_TABS = [
 export type AutomationTabValue = (typeof AUTOMATION_TABS)[number]["value"];
 export type AutomationTab = (typeof AUTOMATION_TABS)[number];
 
-export const AUTOMATION_TAB_HOME: AutomationTabValue = "automations";
+export const AUTOMATION_TAB_HOME: AutomationTabValue = "chat";
 
 /**
  * Tabs a comment-only role can use (ADM-11300). History lists flow
  * executions, so it has nothing to show a comment-only role.
  */
 const COMMENTS_ONLY_TAB_VALUES: ReadonlySet<AutomationTabValue> = new Set<AutomationTabValue>([
+  "chat",
   "automations",
   "templates",
 ]);

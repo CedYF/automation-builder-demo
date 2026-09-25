@@ -41,7 +41,6 @@ export function DemoCommentPreview({ config, actionEvent = "Hide Comment", showS
     brandStanceEnabled ? { label: "Stance toward brand", value: "Mocks or undermines the brand or ad" } : null,
     meaningScanEnabled ? { label: "Scan for meaning", value: "Mock scan finds related pile-ons" } : null,
   ].filter((filter): filter is { label: string; value: string } => filter !== null);
-  const matchedDecisions = decisions.filter((decision) => decision.willHide);
   const selectedPages = DEMO_COMMENT_PAGES.filter((page) => selectedPageIds.includes(page.id));
   const ageLabel = (minutes: number) => minutes < 60 ? `${minutes}m ago` : `${Math.floor(minutes / 60)}h ago`;
 
@@ -49,14 +48,14 @@ export function DemoCommentPreview({ config, actionEvent = "Hide Comment", showS
     return (
       <section aria-label="Sample comment decisions" className="space-y-3">
         {activeFilters.length > 0 && <div className="rounded-xl border bg-muted/20 px-4 py-3">
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Also filtered by</p>
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Rule checks</p>
           <div className="mt-2 flex flex-wrap gap-1.5">
             {activeFilters.map(({ label, value }) => <span key={label} className="inline-flex max-w-full items-center gap-1 rounded-md bg-primary/10 px-2 py-1 text-[11px] text-primary ring-1 ring-inset ring-primary/15"><strong>{label}:</strong><span className="truncate">{value}</span></span>)}
           </div>
         </div>}
         <div aria-label="Preview statistics" className="overflow-hidden rounded-xl border bg-background">
           <div className="flex items-center justify-between border-b px-4 py-3">
-            <h3 className="text-sm font-semibold">Matches</h3>
+            <h3 className="text-sm font-semibold">Comment preview</h3>
             <button type="button" onClick={() => setRefreshCount((count) => count + 1)} className="inline-flex items-center gap-1.5 rounded px-2 py-1 text-xs text-muted-foreground hover:bg-muted" aria-label="Refresh matches"><RefreshCw className="h-3.5 w-3.5" />Refresh</button>
           </div>
           <div className="space-y-3 px-4 py-3">
@@ -64,10 +63,10 @@ export function DemoCommentPreview({ config, actionEvent = "Hide Comment", showS
             {refreshCount > 0 && <p className="text-[11px] text-muted-foreground" role="status">Refreshed from mock comments</p>}
             <div>
               <p className="text-base font-semibold">{matched > 0 ? `${matched} comment${matched === 1 ? "" : "s"} would be ${actionOutcome}` : decisions.length > 0 ? "No matches" : "No comments yet"}</p>
-              <p className="mt-0.5 text-sm text-muted-foreground">Checked {decisions.length} recent comment{decisions.length === 1 ? "" : "s"}</p>
+              <p className="mt-0.5 text-sm text-muted-foreground">{decisions.length - matched} would stay visible · {decisions.length} sample comments checked</p>
             </div>
-            {matchedDecisions.length > 0 && <ul className="max-h-[32rem] space-y-2 overflow-y-auto pr-1">
-              {matchedDecisions.map(({ comment }) => {
+            {decisions.length > 0 && <ul className="max-h-[32rem] space-y-2 overflow-y-auto pr-1">
+              {decisions.map(({ comment, reasons, willHide }) => {
                 const page = DEMO_COMMENT_PAGES.find((candidate) => candidate.id === comment.pageId);
                 const tone = comment.sentimentScore <= 40 ? "Negative" : comment.sentimentScore >= 60 ? "Positive" : "Neutral";
                 const toneColor = tone === "Negative" ? "bg-rose-50 text-rose-700 ring-rose-200" : tone === "Positive" ? "bg-emerald-50 text-emerald-700 ring-emerald-200" : "bg-muted text-muted-foreground ring-border";
@@ -75,12 +74,14 @@ export function DemoCommentPreview({ config, actionEvent = "Hide Comment", showS
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0"><p className="truncate text-sm font-medium">{comment.author}</p><p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[11px] text-muted-foreground">
                       <span className="inline-flex items-center gap-1">{page?.platform === "instagram" ? <Instagram className="h-3 w-3 text-pink-600" /> : <Facebook className="h-3 w-3 text-blue-600" />}{page?.name ?? "Demo page"}</span>
-                      <span>· {ageLabel(comment.postedMinutesAgo)}</span><span>· Scored {ageLabel(comment.scoredMinutesAgo)}</span><span>· Organic post</span>
+                      <span>· {ageLabel(comment.postedMinutesAgo)}</span><span>· Scored {ageLabel(comment.scoredMinutesAgo)}</span><span>· Sample ad comment</span>
                     </p></div>
                     <span className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ring-1 ring-inset ${toneColor}`}>{tone}</span>
                   </div>
                   <p className="mt-2 text-sm leading-snug">{comment.text}</p>
-                  {comment.isHidden && <span className="mt-2 inline-flex rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">Hidden</span>}
+                  <p className={`mt-2 text-xs font-medium ${willHide ? "text-violet-700" : "text-emerald-700"}`}>
+                    {willHide ? actionLabel : unmatchedLabel}{reasons.length ? ` · ${reasons.join(" · ")}` : " · No rule checks matched"}
+                  </p>
                 </li>;
               })}
             </ul>}

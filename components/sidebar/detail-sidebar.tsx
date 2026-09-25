@@ -3,7 +3,7 @@
 import * as React from "react";
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
-import { BarChart3, Files, Zap } from "lucide-react";
+import { BarChart3, Files, MessageSquareText, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /**
@@ -29,7 +29,8 @@ interface DetailNavItem {
 }
 
 const AUTOMATE_NAV_ITEMS: readonly DetailNavItem[] = [
-  { title: "Automations", url: "/automation", icon: Zap },
+  { title: "Chat", url: "/automation", icon: MessageSquareText, activeTab: "chat" },
+  { title: "Automations", url: "/automation?tab=automations&view=table", icon: Zap, activeTab: "automations" },
   { title: "Templates", url: "/automation?tab=templates&view=table", icon: Files, activeTab: "templates" },
   { title: "Admin analytics", url: "/automation/admin", icon: BarChart3 },
 ];
@@ -42,7 +43,7 @@ function useIsActive(item: DetailNavItem): boolean {
 
   if (item.url === "/automation/admin") return pathname === "/automation/admin";
   if (pathname !== "/automation") return false;
-  return item.activeTab === undefined ? tab !== "templates" : tab === item.activeTab;
+  return item.activeTab === "chat" ? tab === null || tab === "chat" : tab === item.activeTab;
 }
 
 function DetailNavLink({ item }: { item: DetailNavItem }) {
@@ -87,11 +88,6 @@ export function DetailSidebar() {
           ))}
         </nav>
 
-        <div className="px-4 pb-4">
-          <p className="text-[10px] leading-relaxed text-sidebar-foreground/40">
-            Demo build. Automations only — see README.md.
-          </p>
-        </div>
       </div>
     </>
   );

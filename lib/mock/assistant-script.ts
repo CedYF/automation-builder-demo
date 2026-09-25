@@ -412,19 +412,19 @@ function commentTemplateTurn(): Omit<MockTurn, "conversationId"> {
         ],
       },
       {
-        text: `I found **${DEMO_COMMENT_PAGES.length} connected demo pages**. Which ones should this automation watch? I’ll wait for your choice before adding any pages.`,
+        text: `I found **${DEMO_COMMENT_PAGES.length} connected demo pages**. Which page should I watch for comments on your ads? I’ll wait for your choice before changing the draft.`,
         toolCalls: [
           builderTool(
             "comment-confirm-pages",
             "ask_user",
             {
               kind: "choice",
-              question: "Which pages should Auto-hide negative comments watch?",
+              question: "Which pages should I watch for comments on your ads?",
               options: [
-                { id: "all", label: "All three pages", description: "UK Facebook, UK Instagram, and US Facebook" },
                 { id: "uk-facebook", label: "UK Facebook", description: "Northwind Coffee — UK" },
-                { id: "uk-instagram", label: "UK Instagram", description: "Northwind Coffee — UK" },
                 { id: "us-facebook", label: "US Facebook", description: "Northwind Coffee — US" },
+                { id: "uk-instagram", label: "UK Instagram", description: "Northwind Coffee — UK" },
+                { id: "all", label: "All three pages", description: "UK Facebook, UK Instagram, and US Facebook" },
               ],
             },
             "Waiting for your page choice",
@@ -432,7 +432,7 @@ function commentTemplateTurn(): Omit<MockTurn, "conversationId"> {
         ],
       },
     ],
-    closing: "**Suggested setup**\n\n1. Confirm the Facebook and Instagram pages to watch below.\n2. Use negative tone, brand-undermining comments, and hostile pile-ons as the starting checks. You can adjust them in the trigger.\n3. Preview the mock matches before saving and turning it on.\n\n**No pages have been added yet.**",
+    closing: "**Next:** Confirm the page below. I’ll add it to the draft with checks for negative tone, brand-undermining comments, and hostile pile-ons. Then you can preview what would be hidden or stay visible before saving. **No pages have been added yet.**",
     meta: { problemCategory: "none", askedQuestion: true },
   };
 }
