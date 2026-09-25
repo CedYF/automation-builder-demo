@@ -6,9 +6,11 @@ This is a mock AdManage demo. Work on **one journey only: Auto-hide negative com
 
 Customers ask the agent to set up comment hiding, but they struggle to tell which pages it will watch, which comments it will hide, whether the automation is only a draft or actually on, and what to do next. Some ask the agent to explain the flow immediately after it builds one. The experience needs to earn their trust before they turn it on. See [customer cases](docs/customer-cases.md) for context.
 
-## What to build
+## Your job: delete what gets in the way, then improve it
 
-### 1. Improve the Agent UI and setup workflow
+The current UI is a starting point, not a design to preserve. Remove confusing panels, controls, steps, copy, or code. Replace them with a clearer experience. Keep the single comment-hiding journey and its mock data working; you can change how the customer gets through it.
+
+### 1. Agent UI and setup workflow
 
 Start at **Automate → Create**. It opens the only template in the normal builder with the Agent beside it. Make this journey simple and obvious:
 
@@ -17,11 +19,11 @@ Start at **Automate → Create**. It opens the only template in the normal build
 3. A preview uses **mock comments** to show what would be hidden and what would stay visible, with a reason for each decision.
 4. The UI states clearly whether the automation is a draft, saved, or on, and gives one useful next action. Saving and turning it on are separate steps.
 
-Improve the conversation and the UI together. Keep the scope to this flow; do not add more templates, a general chat area, or real integrations.
+Change the conversation and the UI together. We care about whether a new customer can understand and complete the setup, not whether the existing layout survives. Do not add more templates, a general chat area, or real integrations.
 
-### 2. Improve the admin health dashboard
+### 2. Admin health dashboard
 
-Open **Admin analytics** from the sidebar. Turn the placeholder into a dashboard that helps the team decide what to fix next as usage grows. Show the setup funnel, where people leave, Agent errors or repeated questions, and whether completed automations actually run successfully. Make the biggest problem and its affected customer count easy to spot. Counts should use people or setup journeys, not raw events; retries must not inflate them.
+Open **Admin analytics** from the sidebar. Remove the placeholder presentation and build a dashboard that helps the team decide what to fix next as usage grows. Show the setup funnel, where people leave, Agent errors or repeated questions, and whether completed automations actually run successfully. Make the biggest problem and its affected customer count easy to spot. Counts should use people or setup journeys, not raw events; retries must not inflate them.
 
 **Main KPI: first successful automation rate.** Of the unique people who start this template, what percentage save it, turn it on, and reach a first successful comment-hiding run within 7 days? Show the numerator, denominator, and time window; only include starts old enough to have a full 7 days. A saved draft or an enabled rule with no successful run does not count. In this demo, label runs and results as simulated.
 
